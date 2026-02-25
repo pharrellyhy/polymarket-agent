@@ -4,6 +4,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+
 from polymarket_agent.db import Database
 from polymarket_agent.execution.paper import PaperTrader
 from polymarket_agent.strategies.base import Signal
@@ -60,3 +61,26 @@ def test_paper_trader_logs_trades(trader) -> None:
     trades = db.get_trades()
     assert len(trades) == 1
     assert trades[0]["side"] == "buy"
+
+
+def test_paper_trader_total_value_respects_zero_current_price(trader) -> None:
+    paper, _db = trader
+    paper.place_order(_make_signal(side="buy", price=0.5, size=50.0))
+    paper._positions["0xtok_100"]["current_price"] = 0.0
+
+    portfolio = paper.get_portfolio()
+    assert portfolio.balance == 950.0
+    assert portfolio.total_value == 950.0
+
+
+def test_paper_trader_invalid_side_does_not_execute_sell(trader) -> None:
+    paper, db = trader
+    paper.place_order(_make_signal(side="buy", price=0.5, size=50.0))
+
+    order = paper.place_order(_make_signal(side="hold", price=0.5, size=25.0))
+
+    assert order is None
+    portfolio = paper.get_portfolio()
+    assert portfolio.balance == 950.0
+    assert portfolio.positions["0xtok_100"]["shares"] == 100.0
+    assert len(db.get_trades()) == 1

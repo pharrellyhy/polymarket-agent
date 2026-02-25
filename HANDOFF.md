@@ -4,6 +4,40 @@ Last updated: 2026-02-25
 
 ---
 
+## Session Entry — 2026-02-25 (Execution Regression Fixes)
+
+### Problem
+- Refactor commit `d4c715e` introduced two behavior regressions:
+- `Portfolio.total_value` treated `current_price=0.0` as missing and fell back to `avg_price`, overstating portfolio value.
+- `PaperTrader.place_order()` routed any non-`"buy"` signal side to sell execution, so malformed sides (for example `"hold"`) could execute unintended sells.
+- Additional review of other recent local commits (`AGENTS.md`, `docs/plans/2026-02-25-polymarket-agent-phase2.md`) found no code-impacting issues.
+- `HANDOFF.md` had a setup path typo (`.../github/brainstorming`).
+
+### Solution
+- Added targeted regression tests in `tests/test_paper_trader.py` for zero-price valuation and invalid signal side handling.
+- Restored explicit side validation in `PaperTrader.place_order()` and log/skip unsupported sides.
+- Updated portfolio valuation helper to preserve valid `0.0` prices.
+- Corrected the setup path in this document.
+
+### Edits
+- `src/polymarket_agent/execution/base.py`
+- `src/polymarket_agent/execution/paper.py`
+- `tests/test_paper_trader.py`
+- `HANDOFF.md`
+
+### NOT Changed
+- No strategy logic changes.
+- No Polymarket CLI wrapper/data parsing changes.
+- No mypy Phase 2 fixes (still pending).
+
+### Verification
+- `uv run python -m ruff check src/polymarket_agent/execution/base.py src/polymarket_agent/execution/paper.py tests/test_paper_trader.py` (passes)
+- `uv run python -m pytest tests/test_paper_trader.py -q` (passes: 6)
+- `uv run python -m pytest tests/test_db.py -q` (passes: 3)
+- Red step verified first: both new tests failed before patching, then passed after patch.
+
+---
+
 ## Project Summary
 
 **Polymarket Agent** is a Python auto-trading pipeline for Polymarket prediction markets. It wraps the official `polymarket` CLI (v0.1.4, installed via Homebrew) into a structured system with pluggable trading strategies, paper/live execution, and planned MCP server integration for AI agents.
@@ -71,7 +105,7 @@ CLI (Typer) → Orchestrator → Data Layer (CLI wrapper + cache)
 
 ### Setup
 ```bash
-cd /Users/pharrelly/codebase/github/brainstorming
+cd /Users/pharrelly/codebase/github/polymarket-agent
 uv sync
 ```
 

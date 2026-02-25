@@ -29,7 +29,10 @@ class PaperTrader(Executor):
         """
         if signal.side == "buy":
             return self._execute_buy(signal)
-        return self._execute_sell(signal)
+        if signal.side == "sell":
+            return self._execute_sell(signal)
+        logger.warning("Unsupported signal side %r; skipping order", signal.side)
+        return None
 
     def get_portfolio(self) -> Portfolio:
         """Return the current portfolio state."""
