@@ -7,12 +7,16 @@ from polymarket_agent.strategies.base import Signal
 
 
 def _signal(
-    strategy: str, market_id: str, side: Literal["buy", "sell"] = "buy", confidence: float = 0.8
+    strategy: str,
+    market_id: str,
+    side: Literal["buy", "sell"] = "buy",
+    confidence: float = 0.8,
+    token_id: str | None = None,
 ) -> Signal:
     return Signal(
         strategy=strategy,
         market_id=market_id,
-        token_id=f"0xtok_{market_id}",
+        token_id=token_id or f"0xtok_{market_id}",
         side=side,
         confidence=confidence,
         target_price=0.5,
@@ -64,4 +68,27 @@ def test_requires_min_strategies() -> None:
 
 def test_empty_input() -> None:
     result = aggregate_signals([], min_confidence=0.0, min_strategies=1)
+    assert result == []
+
+
+def test_does_not_merge_different_tokens_same_market_and_side() -> None:
+    """Signals for different tokens in the same market are kept separate."""
+    signals = [
+        _signal("ai_analyst", "1", "sell", confidence=0.9, token_id="yes-token"),
+        _signal("signal_trader", "1", "sell", confidence=0.8, token_id="no-token"),
+    ]
+    result = aggregate_signals(signals, min_confidence=0.0, min_strategies=1)
+    assert len(result) == 2
+    assert {s.token_id for s in result} == {"yes-token", "no-token"}
+
+
+def test_min_strategies_counts_unique_strategies() -> None:
+    """Duplicate signals from the same strategy count as one for min_strategies."""
+    signals = [
+        _signal("A", "1", "buy", confidence=0.9),
+        _signal("A", "1", "buy", confidence=0.8),
+    ]
+
+    result = aggregate_signals(signals, min_confidence=0.0, min_strategies=2)
+
     assert result == []
