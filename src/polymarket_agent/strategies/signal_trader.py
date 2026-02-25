@@ -37,12 +37,7 @@ class SignalTrader(Strategy):
 
     def analyze(self, markets: list[Market], data: Any) -> list[Signal]:
         """Return directional signals for qualifying markets."""
-        signals: list[Signal] = []
-        for market in markets:
-            signal = self._evaluate(market)
-            if signal is not None:
-                signals.append(signal)
-        return signals
+        return [s for market in markets if (s := self._evaluate(market)) is not None]
 
     # ------------------------------------------------------------------
     # Internal helpers

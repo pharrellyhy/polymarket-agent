@@ -1,8 +1,7 @@
 """Tests for CLI entry point."""
 
-from typer.testing import CliRunner
-
 from polymarket_agent.cli import app
+from typer.testing import CliRunner
 
 runner = CliRunner()
 

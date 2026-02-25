@@ -19,10 +19,14 @@ class Portfolio:
     @property
     def total_value(self) -> float:
         """Calculate total portfolio value including open positions."""
-        position_value = sum(
-            p.get("shares", 0) * p.get("current_price", p.get("avg_price", 0)) for p in self.positions.values()
-        )
+        position_value = sum(self._position_value(p) for p in self.positions.values())
         return self.balance + position_value
+
+    @staticmethod
+    def _position_value(pos: dict[str, Any]) -> float:
+        shares: float = pos.get("shares", 0)
+        price: float = pos.get("current_price") or pos.get("avg_price", 0)
+        return shares * price
 
 
 @dataclass

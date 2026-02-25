@@ -21,11 +21,10 @@ ConfigOption = Annotated[Path, typer.Option("--config", "-c", help="Path to conf
 DbOption = Annotated[Path, typer.Option("--db", help="Path to SQLite database")]
 
 
-def _get_config(config_path: Path) -> AppConfig:
-    """Load config from file or return defaults."""
-    if config_path.exists():
-        return load_config(config_path)
-    return AppConfig()
+def _build_orchestrator(config_path: Path, db_path: Path) -> tuple[AppConfig, Orchestrator]:
+    """Load config and create an Orchestrator."""
+    cfg = load_config(config_path) if config_path.exists() else AppConfig()
+    return cfg, Orchestrator(config=cfg, db_path=db_path)
 
 
 @app.command()
@@ -35,8 +34,7 @@ def run(
 ) -> None:
     """Run the continuous trading loop."""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    cfg = _get_config(config)
-    orch = Orchestrator(config=cfg, db_path=db)
+    cfg, orch = _build_orchestrator(config, db)
     typer.echo(f"Starting polymarket-agent in {cfg.mode} mode (poll every {cfg.poll_interval}s)")
     try:
         while True:
@@ -59,8 +57,7 @@ def status(
     db: DbOption = DEFAULT_DB,
 ) -> None:
     """Show current portfolio and recent trades."""
-    cfg = _get_config(config)
-    orch = Orchestrator(config=cfg, db_path=db)
+    cfg, orch = _build_orchestrator(config, db)
     portfolio = orch.get_portfolio()
     typer.echo(f"Mode: {cfg.mode}")
     typer.echo(f"Balance: ${portfolio.balance:.2f}")
@@ -75,8 +72,7 @@ def tick(
 ) -> None:
     """Run a single tick of the trading loop."""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    cfg = _get_config(config)
-    orch = Orchestrator(config=cfg, db_path=db)
+    _cfg, orch = _build_orchestrator(config, db)
     result = orch.tick()
     portfolio = orch.get_portfolio()
     typer.echo(

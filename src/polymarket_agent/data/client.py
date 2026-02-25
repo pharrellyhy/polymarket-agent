@@ -35,8 +35,7 @@ class PolymarketData:
         if tag:
             args.extend(["--tag", tag])
 
-        key = f"markets:{tag}:{limit}"
-        raw = self._run_cli_cached(self._cache, key, args)
+        raw = self._run_cli_cached(f"markets:{tag}:{limit}", args)
         data: list[dict[str, Any]] = json.loads(raw)
         return [Market.from_cli(m) for m in data]
 
@@ -46,16 +45,14 @@ class PolymarketData:
         if tag:
             args.extend(["--tag", tag])
 
-        key = f"events:{tag}:{limit}"
-        raw = self._run_cli_cached(self._cache, key, args)
+        raw = self._run_cli_cached(f"events:{tag}:{limit}", args)
         data: list[dict[str, Any]] = json.loads(raw)
         return [Event.from_cli(e) for e in data]
 
     def get_orderbook(self, token_id: str) -> OrderBook:
         """Return the order book for a CLOB token."""
         args = ["polymarket", "clob", "book", token_id, "-o", "json"]
-        key = f"book:{token_id}"
-        raw = self._run_cli_cached(self._cache, key, args)
+        raw = self._run_cli_cached(f"book:{token_id}", args)
         data: dict[str, Any] = json.loads(raw)
         return OrderBook.from_cli(data)
 
@@ -79,8 +76,7 @@ class PolymarketData:
             "-o",
             "json",
         ]
-        key = f"history:{token_id}:{interval}:{fidelity}"
-        raw = self._run_cli_cached(self._cache, key, args)
+        raw = self._run_cli_cached(f"history:{token_id}:{interval}:{fidelity}", args)
         data: list[dict[str, Any]] = json.loads(raw)
         return [PricePoint.from_cli(p) for p in data]
 
@@ -100,11 +96,11 @@ class PolymarketData:
             raise RuntimeError(msg)
         return result.stdout
 
-    def _run_cli_cached(self, cache: TTLCache, key: str, args: list[str]) -> str:
+    def _run_cli_cached(self, key: str, args: list[str]) -> str:
         """Return cached CLI output or execute and cache the result."""
-        cached = cache.get(key)
+        cached = self._cache.get(key)
         if cached is not None:
             return cached  # type: ignore[return-value]
         raw = self._run_cli(args)
-        cache.set(key, raw)
+        self._cache.set(key, raw)
         return raw

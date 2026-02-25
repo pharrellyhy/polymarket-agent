@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import astuple, dataclass
 from pathlib import Path
 
 
@@ -49,19 +49,19 @@ class Database:
         self._conn.execute(
             "INSERT INTO trades (strategy, market_id, token_id, side, price, size, reason)"
             " VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (trade.strategy, trade.market_id, trade.token_id, trade.side, trade.price, trade.size, trade.reason),
+            astuple(trade),
         )
         self._conn.commit()
 
     def get_trades(self, strategy: str | None = None) -> list[dict[str, object]]:
         """Retrieve trades, optionally filtered by strategy name."""
+        query = "SELECT * FROM trades"
+        params: tuple[str, ...] = ()
         if strategy:
-            rows = self._conn.execute(
-                "SELECT * FROM trades WHERE strategy = ? ORDER BY timestamp DESC",
-                (strategy,),
-            ).fetchall()
-        else:
-            rows = self._conn.execute("SELECT * FROM trades ORDER BY timestamp DESC").fetchall()
+            query += " WHERE strategy = ?"
+            params = (strategy,)
+        query += " ORDER BY timestamp DESC"
+        rows = self._conn.execute(query, params).fetchall()
         return [dict(row) for row in rows]
 
     def close(self) -> None:

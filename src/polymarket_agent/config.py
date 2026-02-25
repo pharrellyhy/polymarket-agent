@@ -29,6 +29,4 @@ class AppConfig(BaseModel):
 
 def load_config(path: Path) -> AppConfig:
     """Load config from a YAML file."""
-    with open(path) as f:
-        raw = yaml.safe_load(f)
-    return AppConfig(**raw)
+    return AppConfig(**yaml.safe_load(path.read_text()))

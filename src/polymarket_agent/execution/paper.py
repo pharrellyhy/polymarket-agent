@@ -29,9 +29,7 @@ class PaperTrader(Executor):
         """
         if signal.side == "buy":
             return self._execute_buy(signal)
-        elif signal.side == "sell":
-            return self._execute_sell(signal)
-        return None
+        return self._execute_sell(signal)
 
     def get_portfolio(self) -> Portfolio:
         """Return the current portfolio state."""

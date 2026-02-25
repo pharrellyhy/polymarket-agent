@@ -51,16 +51,12 @@ class Orchestrator:
 
         signals: list[Signal] = []
         for strategy in self._strategies:
-            result = strategy.analyze(markets, self._data)
-            signals.extend(result)
+            signals.extend(strategy.analyze(markets, self._data))
         logger.info("Generated %d signals from %d strategies", len(signals), len(self._strategies))
 
         trades_executed = 0
         if self._config.mode != "monitor":
-            for signal in signals:
-                order = self._executor.place_order(signal)
-                if order is not None:
-                    trades_executed += 1
+            trades_executed = sum(1 for s in signals if self._executor.place_order(s) is not None)
         logger.info("Executed %d trades (mode=%s)", trades_executed, self._config.mode)
 
         return {
@@ -75,8 +71,7 @@ class Orchestrator:
 
     def get_recent_trades(self, limit: int = 20) -> list[dict[str, object]]:
         """Return recent trades from the database."""
-        trades = self._db.get_trades()
-        return trades[:limit]
+        return self._db.get_trades()[:limit]
 
     # ------------------------------------------------------------------
     # Internal helpers

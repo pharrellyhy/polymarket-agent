@@ -1,6 +1,5 @@
 """Tests for config loading."""
 
-import tempfile
 from pathlib import Path
 
 from polymarket_agent.config import AppConfig, load_config
@@ -23,11 +22,10 @@ risk:
 """
 
 
-def test_load_config_from_yaml():
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
-        f.write(SAMPLE_YAML)
-        f.flush()
-        config = load_config(Path(f.name))
+def test_load_config_from_yaml(tmp_path: Path):
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(SAMPLE_YAML)
+    config = load_config(config_file)
     assert config.mode == "paper"
     assert config.starting_balance == 2000.0
     assert config.poll_interval == 30

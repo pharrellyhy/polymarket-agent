@@ -8,6 +8,22 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 
+def _parse_json_field(data: dict[str, Any], key: str) -> list[Any]:
+    """Parse a CLI field that may be a JSON-encoded string or already a list."""
+    raw = data.get(key, "[]")
+    return json.loads(raw) if isinstance(raw, str) else raw
+
+
+def _str_field(data: dict[str, Any], key: str) -> str:
+    """Extract an optional string field, defaulting to empty string."""
+    return data.get(key) or ""
+
+
+def _float_field(data: dict[str, Any], key: str) -> float:
+    """Extract an optional numeric field, defaulting to 0.0."""
+    return float(data.get(key) or 0)
+
+
 class Market(BaseModel):
     """A single prediction market."""
 
@@ -30,32 +46,22 @@ class Market(BaseModel):
     @classmethod
     def from_cli(cls, data: dict[str, Any]) -> Market:
         """Parse a market dict from the polymarket CLI JSON output."""
-        outcomes_raw = data.get("outcomes", "[]")
-        outcomes: list[str] = json.loads(outcomes_raw) if isinstance(outcomes_raw, str) else outcomes_raw
-
-        prices_raw = data.get("outcomePrices", "[]")
-        prices_parsed: list[str] = json.loads(prices_raw) if isinstance(prices_raw, str) else prices_raw
-        outcome_prices: list[float] = [float(p) for p in prices_parsed]
-
-        token_ids_raw = data.get("clobTokenIds", "[]")
-        clob_token_ids: list[str] = json.loads(token_ids_raw) if isinstance(token_ids_raw, str) else token_ids_raw
-
         return cls(
             id=str(data["id"]),
             question=data["question"],
-            outcomes=outcomes,
-            outcome_prices=outcome_prices,
-            volume=float(data.get("volume") or 0),
-            liquidity=float(data.get("liquidity") or 0),
+            outcomes=_parse_json_field(data, "outcomes"),
+            outcome_prices=[float(p) for p in _parse_json_field(data, "outcomePrices")],
+            volume=_float_field(data, "volume"),
+            liquidity=_float_field(data, "liquidity"),
             active=data["active"],
             closed=data["closed"],
-            condition_id=data.get("conditionId") or "",
-            slug=data.get("slug") or "",
-            end_date=data.get("endDate") or "",
-            description=data.get("description") or "",
-            clob_token_ids=clob_token_ids,
-            volume_24h=float(data.get("volume24hr") or 0),
-            group_item_title=data.get("groupItemTitle") or "",
+            condition_id=_str_field(data, "conditionId"),
+            slug=_str_field(data, "slug"),
+            end_date=_str_field(data, "endDate"),
+            description=_str_field(data, "description"),
+            clob_token_ids=_parse_json_field(data, "clobTokenIds"),
+            volume_24h=_float_field(data, "volume24hr"),
+            group_item_title=_str_field(data, "groupItemTitle"),
         )
 
 
@@ -79,23 +85,20 @@ class Event(BaseModel):
     @classmethod
     def from_cli(cls, data: dict[str, Any]) -> Event:
         """Parse an event dict from the polymarket CLI JSON output."""
-        raw_markets: list[dict[str, Any]] = data.get("markets", [])
-        markets = [Market.from_cli(m) for m in raw_markets]
-
         return cls(
             id=str(data["id"]),
             title=data["title"],
-            description=data.get("description") or "",
-            ticker=data.get("ticker") or "",
-            slug=data.get("slug") or "",
-            start_date=data.get("startDate") or "",
-            end_date=data.get("endDate") or "",
+            description=_str_field(data, "description"),
+            ticker=_str_field(data, "ticker"),
+            slug=_str_field(data, "slug"),
+            start_date=_str_field(data, "startDate"),
+            end_date=_str_field(data, "endDate"),
             active=data["active"],
             closed=data["closed"],
-            liquidity=float(data.get("liquidity") or 0),
-            volume=float(data.get("volume") or 0),
-            volume_24h=float(data.get("volume24hr") or 0),
-            markets=markets,
+            liquidity=_float_field(data, "liquidity"),
+            volume=_float_field(data, "volume"),
+            volume_24h=_float_field(data, "volume24hr"),
+            markets=[Market.from_cli(m) for m in data.get("markets", [])],
         )
 
 
