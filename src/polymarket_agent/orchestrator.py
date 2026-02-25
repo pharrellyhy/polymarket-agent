@@ -11,6 +11,7 @@ from polymarket_agent.data.client import PolymarketData
 from polymarket_agent.db import Database
 from polymarket_agent.execution.base import Portfolio
 from polymarket_agent.execution.paper import PaperTrader
+from polymarket_agent.strategies.aggregator import aggregate_signals
 from polymarket_agent.strategies.ai_analyst import AIAnalyst
 from polymarket_agent.strategies.arbitrageur import Arbitrageur
 from polymarket_agent.strategies.base import Signal, Strategy
@@ -55,10 +56,17 @@ class Orchestrator:
         markets = self._data.get_active_markets()
         logger.info("Fetched %d active markets", len(markets))
 
-        signals: list[Signal] = []
+        raw_signals: list[Signal] = []
         for strategy in self._strategies:
-            signals.extend(strategy.analyze(markets, self._data))
-        logger.info("Generated %d signals from %d strategies", len(signals), len(self._strategies))
+            raw_signals.extend(strategy.analyze(markets, self._data))
+        logger.info("Generated %d raw signals from %d strategies", len(raw_signals), len(self._strategies))
+
+        signals = aggregate_signals(
+            raw_signals,
+            min_confidence=0.5,
+            min_strategies=1,
+        )
+        logger.info("Aggregated to %d signals", len(signals))
 
         trades_executed = 0
         if self._config.mode != "monitor":
