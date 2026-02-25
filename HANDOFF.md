@@ -4,6 +4,66 @@ Last updated: 2026-02-25
 
 ---
 
+## Session Entry — 2026-02-25 (Phase 2 Complete: Integration Test + Final Verification)
+
+### Problem
+- Phase 2 Tasks 7–8 pending: integration test and final verification.
+
+### Solution
+- **Task 7 — Integration test:** End-to-end test running signal_trader + arbitrageur through the full orchestrator pipeline with mocked CLI data. Tests paper mode (verifies signals generated, trades executed, balance decreased) and monitor mode (verifies signals generated but zero trades). Uses `_pipeline()` context manager and `_STRATEGIES` constant for DRY setup.
+- **Task 8 — Final verification:** Full test suite (63 passed), ruff check (clean), mypy strict (19 source files clean), smoke test with live data (50 markets, 9 signals, 5 trades).
+- **Code review + simplification pass:** Tightened integration test assertions (paper mode balance check was always-true, monitor mode `>= 0` was trivially true). Extracted `_pipeline` context manager and `_make_analyst` helper for DRY. Added `token_id` param to aggregator test helper. Added docstrings to tests missing them.
+
+### Edits
+- `tests/test_integration.py` — **NEW** (2 integration tests with shared `_pipeline()` context manager)
+- `tests/test_ai_analyst.py` — extracted `_make_analyst` helper, added docstring to rate-limit edge case test
+- `tests/test_aggregator.py` — added `token_id` param to `_signal()` helper, added docstrings to new tests
+
+### NOT Changed
+- No source code changes in this batch (all production code was already complete from Tasks 1–6).
+- Pre-existing ruff isort issues in test_cli.py, test_client.py, test_db.py left as-is.
+
+### Verification
+```bash
+uv run pytest tests/ -v           # 63 passed
+uv run ruff check src/            # All checks passed
+uv run mypy src/                  # Success: no issues found in 19 source files
+uv run polymarket-agent tick      # 50 markets, 9 signals, 5 trades (live data)
+```
+
+### Branch
+- Working branch: `phase2/strategy-modules` (14 commits ahead of `main`)
+- Batch 3 commits:
+  - `af43ce4` test: add integration test for full multi-strategy pipeline
+  - `47d5d93` refactor: apply code review and simplification to batch 3
+
+---
+
+## Session Entry — 2026-02-25 (Phase 2 Batch 2 Review Follow-Up)
+
+### Problem
+- Review of the newly added Batch 2 code found two correctness issues:
+- `aggregate_signals()` grouped by `(market_id, side)`, which merged different token IDs (for example AIAnalyst sell on Yes vs other strategy sell on No) and could deduplicate to the wrong instrument.
+- `aggregate_signals()` enforced `min_strategies` using raw signal count, so duplicate signals from one strategy could incorrectly satisfy consensus.
+- `AIAnalyst` only counted successful/parsible responses toward rate limiting, allowing repeated unparseable responses to exceed `max_calls_per_hour`.
+
+### Solution
+- Updated signal aggregation to group by `(market_id, token_id, side)` instead of `(market_id, side)`.
+- Changed consensus enforcement to count unique strategy names per group.
+- Updated `AIAnalyst` to count every attempted Claude call toward rate limiting (including parse failures/exceptions) via `finally` block.
+- Added focused regression tests for both aggregation issues and the AIAnalyst rate-limit edge case.
+
+### Edits
+- `src/polymarket_agent/strategies/aggregator.py`
+- `src/polymarket_agent/strategies/ai_analyst.py`
+- `tests/test_aggregator.py`
+- `tests/test_ai_analyst.py`
+
+### Verification
+- `uv run python -m pytest tests/test_ai_analyst.py tests/test_aggregator.py -q` (passes)
+
+---
+
 ## Session Entry — 2026-02-25 (Phase 2 Batch 2: AIAnalyst + Aggregation + Config)
 
 ### Problem
@@ -11,9 +71,9 @@ Last updated: 2026-02-25
 
 ### Solution
 - **Task 4 — AIAnalyst:** New strategy that sends market questions to Claude and parses probability estimates. If the AI estimate diverges from market price by more than `min_divergence`, emits a buy or sell signal. Rate-limited via sliding-window `_call_timestamps`. Gracefully degrades when `ANTHROPIC_API_KEY` is unset or `anthropic` package is missing. Added `anthropic` runtime dependency.
-- **Task 5 — Signal aggregation:** New `aggregate_signals()` function groups signals by `(market_id, side)`, deduplicates (keeps highest confidence per group), filters by `min_confidence`, and enforces `min_strategies` consensus. Integrated into orchestrator `tick()` between strategy signal collection and execution.
+- **Task 5 — Signal aggregation:** New `aggregate_signals()` function groups signals by `(market_id, token_id, side)`, deduplicates (keeps highest confidence per group), filters by `min_confidence`, and enforces `min_strategies` consensus (counts unique strategy names). Integrated into orchestrator `tick()` between strategy signal collection and execution.
 - **Task 6 — Config updates:** Added `AggregationConfig` (Pydantic model with `min_confidence` and `min_strategies`) to `config.py`. Updated `config.yaml` with entries for all 4 strategies and aggregation settings. Wired orchestrator to read aggregation params from config.
-- **Code review + simplification pass:** Fixed critical sell-signal semantics (sell targets Yes token, not No), tightened regex to only match [0, 1] probabilities, moved rate-limit timestamp after API success, extracted `_mock_client` test helper, added sell/parse-failure/exception test cases, fixed `Literal` type in test helper.
+- **Code review + simplification pass:** Fixed critical sell-signal semantics (sell targets Yes token, not No), tightened regex to only match [0, 1] probabilities, extracted `_mock_client` test helper, added sell/parse-failure/exception test cases.
 
 ### Edits
 - `pyproject.toml` — added `anthropic` runtime dependency
@@ -22,135 +82,42 @@ Last updated: 2026-02-25
 - `src/polymarket_agent/orchestrator.py` — added AIAnalyst to `STRATEGY_REGISTRY`, integrated `aggregate_signals()` into `tick()`
 - `src/polymarket_agent/config.py` — added `AggregationConfig` model
 - `config.yaml` — added market_maker, arbitrageur, ai_analyst, aggregation sections
-- `tests/test_ai_analyst.py` — **NEW** (7 tests)
-- `tests/test_aggregator.py` — **NEW** (5 tests)
+- `tests/test_ai_analyst.py` — **NEW** (8 tests)
+- `tests/test_aggregator.py` — **NEW** (7 tests)
 - `tests/test_config.py` — added aggregation config assertions
-
-### NOT Changed
-- No changes to data layer, execution layer, or existing strategy logic.
-- No changes to MarketMaker or Arbitrageur strategies.
-- Pre-existing ruff isort issues in test_cli.py, test_client.py, test_db.py left as-is.
-
-### What Remains (Phase 2 Tasks 7–8)
-- **Task 7:** Integration test (full pipeline with all strategies, mocked CLI)
-- **Task 8:** Final verification (full test suite, ruff, mypy, smoke test)
-
-See `docs/plans/2026-02-25-polymarket-agent-phase2.md` for detailed implementation steps.
-
-### Verification
-```bash
-uv run mypy src/                  # Success: no issues found in 19 source files
-uv run ruff check src/            # All checks passed
-uv run pytest tests/ -v           # 58 passed
-```
-
-### Branch
-- Working branch: `phase2/strategy-modules` (9 commits ahead of `main`)
-- Batch 2 commits:
-  - `1812328` feat: add AIAnalyst strategy with Claude integration
-  - `eca0c27` feat: add signal aggregation with dedup and confidence filtering
-  - `aef1c98` feat: add config for new strategies and signal aggregation
-  - `f2ba8f6` refactor: apply code review and simplification to batch 2
-
----
-
-## Session Entry — 2026-02-25 (Phase 2 Batch 1 Review Follow-Up)
-
-### Problem
-- Review of the newly added Phase 2 Batch 1 code found three edge-case correctness issues:
-- `models.py` list parsing still broke on explicit `null` values (for example `clobTokenIds: null`, `markets: null`).
-- `MarketMaker` emitted buy/sell quotes even when only one token ID was present, producing invalid two-sided quoting behavior.
-- `Arbitrageur` emitted signals with empty `token_id` when outcome prices deviated but `clob_token_ids` were missing.
-
-### Solution
-- Hardened JSON/list parsing in `src/polymarket_agent/data/models.py` to treat explicit `null` (and non-list values) as empty lists.
-- Made `Event.from_cli()` null-safe for `markets`.
-- Tightened `MarketMaker` token validation to require a token pair and simplified sell-token selection by removing the fallback-to-yes behavior.
-- Made `Arbitrageur` skip signals when the selected outcome token ID is unavailable.
-- Added focused regression tests for all three cases.
-
-### Edits
-- `src/polymarket_agent/data/models.py`
-- `src/polymarket_agent/strategies/market_maker.py`
-- `src/polymarket_agent/strategies/arbitrageur.py`
-- `tests/test_models.py`
-- `tests/test_market_maker.py`
-- `tests/test_arbitrageur.py`
-
-### NOT Changed
-- No changes to orchestrator wiring.
-- No changes to execution/paper trading logic.
-- `MarketMaker._max_inventory` remains configured-but-unused (known issue).
-- `Arbitrageur._min_deviation` remains configured-but-unused (known issue).
-
-### Verification
-- `uv run python -m pytest tests/test_models.py tests/test_market_maker.py tests/test_arbitrageur.py -q` (passes: 16)
-- `uv run python -m ruff check src/polymarket_agent/data/models.py src/polymarket_agent/strategies/market_maker.py src/polymarket_agent/strategies/arbitrageur.py tests/test_models.py tests/test_market_maker.py tests/test_arbitrageur.py` (passes)
 
 ---
 
 ## Session Entry — 2026-02-25 (Phase 2 Batch 1: mypy fixes + MarketMaker + Arbitrageur)
 
 ### Problem
-- Phase 1 left 5 mypy strict-mode errors (missing stubs, wrong type annotations, `Any` returns).
-- Phase 2 plan calls for 3 new strategies (MarketMaker, Arbitrageur, AIAnalyst), signal aggregation, and config updates. This session implements the first batch: mypy fixes + 2 strategies.
+- Phase 1 left 5 mypy strict-mode errors. Phase 2 plan calls for 3 new strategies, signal aggregation, and config updates.
 
 ### Solution
-- **Task 1 — mypy fixes:** Added `types-PyYAML` dev dep, replaced `type: ignore` in client.py with `assert isinstance`, changed `side: str` to `side: Literal["buy", "sell"]` in signal_trader.py, added `float()` casts in execution/base.py, fixed `no-any-return` in models.py `_parse_json_field()`. Result: `mypy src/` → `Success: no issues found`.
-- **Task 2 — MarketMaker:** New strategy that fetches the order book for each liquid, active market and emits a buy signal below midpoint and a sell signal above midpoint, separated by configurable spread. Includes `_clamp()` utility, `_quote_market()` helper, `_signal()` closure for DRY signal construction. Guards against one-sided orderbooks and uses `except RuntimeError` (not bare `Exception`).
-- **Task 3 — Arbitrageur:** New strategy that checks whether complementary outcome prices sum to ~1.0. If the sum deviates beyond a configurable tolerance, buys the underpriced side or sells the overpriced side. Uses walrus-operator comprehension matching the SignalTrader pattern.
-- **Code review + simplification pass:** Both strategies were reviewed and simplified. Key fixes: narrowed exception handling, added one-sided book guard, extracted helpers, tightened test assertions, fixed isort ordering.
+- **Task 1 — mypy fixes:** Added `types-PyYAML` dev dep, fixed type annotations across 4 files. Result: `mypy src/` → `Success: no issues found`.
+- **Task 2 — MarketMaker:** Bid/ask around orderbook midpoint for liquid markets. Guards one-sided books, uses `except RuntimeError`.
+- **Task 3 — Arbitrageur:** Price-sum deviation detection. Buys underpriced / sells overpriced side.
+- **Code review + simplification pass:** Narrowed exception handling, added one-sided book guard, extracted helpers.
 
 ### Edits
-- `pyproject.toml` — added `types-PyYAML` to dev deps
-- `src/polymarket_agent/data/client.py` — replaced `type: ignore` with `assert isinstance`
-- `src/polymarket_agent/data/models.py` — fixed `no-any-return` in `_parse_json_field()`
-- `src/polymarket_agent/strategies/signal_trader.py` — `str` → `Literal["buy", "sell"]`
-- `src/polymarket_agent/execution/base.py` — `float()` casts in `_position_value()`
-- `src/polymarket_agent/strategies/market_maker.py` — **NEW** (MarketMaker strategy)
-- `src/polymarket_agent/strategies/arbitrageur.py` — **NEW** (Arbitrageur strategy)
-- `src/polymarket_agent/orchestrator.py` — added MarketMaker + Arbitrageur to `STRATEGY_REGISTRY`, fixed isort
-- `tests/test_market_maker.py` — **NEW** (4 tests)
-- `tests/test_arbitrageur.py` — **NEW** (4 tests)
-
-### Verification
-```bash
-uv run mypy src/                  # Success: no issues found in 17 source files
-uv run ruff check src/            # All checks passed
-uv run pytest tests/ -v           # 42 passed
-```
-
-### Branch
-- Working branch: `phase2/strategy-modules`
-- Commits:
-  - `dbf065b` fix: resolve mypy type errors from Phase 1
-  - `2b8e9b5` feat: add MarketMaker strategy
-  - `556654d` feat: add Arbitrageur strategy
-  - `79f280b` refactor: apply code review and simplification to batch 1
+- `pyproject.toml`, `src/polymarket_agent/data/client.py`, `src/polymarket_agent/data/models.py`, `src/polymarket_agent/strategies/signal_trader.py`, `src/polymarket_agent/execution/base.py`
+- `src/polymarket_agent/strategies/market_maker.py` — **NEW**
+- `src/polymarket_agent/strategies/arbitrageur.py` — **NEW**
+- `src/polymarket_agent/orchestrator.py` — added to `STRATEGY_REGISTRY`
+- `tests/test_market_maker.py` — **NEW** (5 tests), `tests/test_arbitrageur.py` — **NEW** (5 tests)
 
 ---
 
 ## Session Entry — 2026-02-25 (Execution Regression Fixes)
 
 ### Problem
-- Refactor commit `d4c715e` introduced two behavior regressions:
-- `Portfolio.total_value` treated `current_price=0.0` as missing and fell back to `avg_price`, overstating portfolio value.
-- `PaperTrader.place_order()` routed any non-`"buy"` signal side to sell execution, so malformed sides (for example `"hold"`) could execute unintended sells.
+- Refactor commit `d4c715e` introduced two behavior regressions in portfolio valuation and side validation.
 
 ### Solution
-- Added targeted regression tests in `tests/test_paper_trader.py` for zero-price valuation and invalid signal side handling.
-- Restored explicit side validation in `PaperTrader.place_order()` and log/skip unsupported sides.
-- Updated portfolio valuation helper to preserve valid `0.0` prices.
+- Added regression tests, restored explicit side validation, fixed zero-price handling.
 
 ### Edits
-- `src/polymarket_agent/execution/base.py`
-- `src/polymarket_agent/execution/paper.py`
-- `tests/test_paper_trader.py`
-- `HANDOFF.md`
-
-### Verification
-- `uv run python -m pytest tests/test_paper_trader.py -q` (passes: 6)
-- Red step verified first: both new tests failed before patching, then passed after patch.
+- `src/polymarket_agent/execution/base.py`, `src/polymarket_agent/execution/paper.py`, `tests/test_paper_trader.py`
 
 ---
 
@@ -158,16 +125,15 @@ uv run pytest tests/ -v           # 42 passed
 
 **Polymarket Agent** is a Python auto-trading pipeline for Polymarket prediction markets. It wraps the official `polymarket` CLI (v0.1.4, installed via Homebrew) into a structured system with pluggable trading strategies, paper/live execution, and planned MCP server integration for AI agents.
 
-Inspired by Karpathy's "Build. For. Agents." thesis — CLIs are agent-native interfaces.
+## Current State: Phase 2 COMPLETE
 
-## Current State: Phase 2 IN PROGRESS (Batches 1–2 complete)
-
-- Branch: `phase2/strategy-modules` (9 commits ahead of `main`)
-- 58 tests passing, ruff lint clean, mypy strict clean (19 source files)
+- Branch: `phase2/strategy-modules` (14 commits ahead of `main`)
+- 63 tests passing, ruff lint clean, mypy strict clean (19 source files)
 - All 4 strategies implemented: SignalTrader, MarketMaker, Arbitrageur, AIAnalyst
-- Signal aggregation integrated into orchestrator tick()
+- Signal aggregation integrated (groups by market+token+side, unique strategy consensus)
 - Config updated for all strategies + aggregation
-- Tasks 7–8 remain (integration test, final verification)
+- Integration test covering paper + monitor modes
+- Smoke tested with live Polymarket data
 
 ## Architecture
 
@@ -181,55 +147,52 @@ CLI (Typer) → Orchestrator → Data Layer (CLI wrapper + cache)
 
 ## File Map
 
-| File | Purpose | Lines |
-|------|---------|-------|
-| `src/polymarket_agent/cli.py` | Typer CLI: `run`, `status`, `tick` commands | ~80 |
-| `src/polymarket_agent/orchestrator.py` | Main loop: fetch → analyze → aggregate → execute | ~110 |
-| `src/polymarket_agent/config.py` | Pydantic config from YAML (incl. AggregationConfig) | ~40 |
-| `src/polymarket_agent/data/models.py` | Market, Event, OrderBook, PricePoint (Pydantic) | ~186 |
-| `src/polymarket_agent/data/client.py` | CLI wrapper with TTL caching | ~107 |
-| `src/polymarket_agent/data/cache.py` | In-memory TTL cache | 31 |
-| `src/polymarket_agent/db.py` | SQLite trade logging | ~68 |
-| `src/polymarket_agent/strategies/base.py` | Strategy ABC + Signal dataclass | 38 |
-| `src/polymarket_agent/strategies/signal_trader.py` | Volume-filtered directional signals | ~80 |
-| `src/polymarket_agent/strategies/market_maker.py` | Bid/ask around orderbook midpoint | ~92 |
-| `src/polymarket_agent/strategies/arbitrageur.py` | Price-sum deviation detection | ~75 |
-| `src/polymarket_agent/strategies/ai_analyst.py` | Claude probability estimates + divergence trading | ~137 |
-| `src/polymarket_agent/strategies/aggregator.py` | Signal dedup, confidence filtering, consensus | ~38 |
-| `src/polymarket_agent/execution/base.py` | Executor ABC + Portfolio + Order | ~55 |
-| `src/polymarket_agent/execution/paper.py` | Paper trading with virtual USDC | ~140 |
-| `config.yaml` | Default config (paper mode, $1000, 4 strategies, aggregation) | ~30 |
-| `pyproject.toml` | Project config (deps, ruff, mypy) | ~45 |
+| File | Purpose |
+|------|---------|
+| `src/polymarket_agent/cli.py` | Typer CLI: `run`, `status`, `tick` commands |
+| `src/polymarket_agent/orchestrator.py` | Main loop: fetch → analyze → aggregate → execute |
+| `src/polymarket_agent/config.py` | Pydantic config from YAML (incl. AggregationConfig) |
+| `src/polymarket_agent/data/models.py` | Market, Event, OrderBook, PricePoint (Pydantic) |
+| `src/polymarket_agent/data/client.py` | CLI wrapper with TTL caching |
+| `src/polymarket_agent/data/cache.py` | In-memory TTL cache |
+| `src/polymarket_agent/db.py` | SQLite trade logging |
+| `src/polymarket_agent/strategies/base.py` | Strategy ABC + Signal dataclass |
+| `src/polymarket_agent/strategies/signal_trader.py` | Volume-filtered directional signals |
+| `src/polymarket_agent/strategies/market_maker.py` | Bid/ask around orderbook midpoint |
+| `src/polymarket_agent/strategies/arbitrageur.py` | Price-sum deviation detection |
+| `src/polymarket_agent/strategies/ai_analyst.py` | Claude probability estimates + divergence trading |
+| `src/polymarket_agent/strategies/aggregator.py` | Signal dedup, confidence filtering, consensus |
+| `src/polymarket_agent/execution/base.py` | Executor ABC + Portfolio + Order |
+| `src/polymarket_agent/execution/paper.py` | Paper trading with virtual USDC |
+| `config.yaml` | Default config (paper mode, $1000, 4 strategies, aggregation) |
+| `pyproject.toml` | Project config (deps, ruff, mypy) |
 
 ## Key Design Decisions
 
 1. **All data comes from `polymarket` CLI** — subprocess with `-o json`, parsed through `PolymarketData._run_cli()`. Never call subprocess directly elsewhere.
-2. **Null-safe parsing** — Polymarket CLI returns `null` for optional fields. Use `data.get("field") or ""` pattern (not `data.get("field", "")`). Helper functions `_str_field()`, `_float_field()`, `_parse_json_field()` in models.py.
+2. **Null-safe parsing** — Polymarket CLI returns `null` for optional fields. Helper functions `_str_field()`, `_float_field()`, `_parse_json_field()` in models.py.
 3. **Strategy ABC** — All strategies implement `analyze(markets, data) -> list[Signal]`. Register in `STRATEGY_REGISTRY` dict in `orchestrator.py`.
 4. **Executor ABC** — `place_order(signal) -> Order | None`. Paper and Live share interface.
 5. **Signal dataclass** — `strategy`, `market_id`, `token_id`, `side` (buy/sell), `confidence`, `target_price`, `size` (USDC), `reason`.
-6. **Signal aggregation** — `aggregate_signals()` groups by `(market_id, side)`, deduplicates (highest confidence wins), filters by `min_confidence`, enforces `min_strategies` consensus. Runs between strategy collection and execution in `tick()`.
+6. **Signal aggregation** — `aggregate_signals()` groups by `(market_id, token_id, side)`, deduplicates (highest confidence wins), filters by `min_confidence`, enforces `min_strategies` consensus (unique strategy names). Runs between strategy collection and execution in `tick()`.
 
 ## Known Issues from Code Review
 
-### Critical (fix in Phase 2)
+### Critical
 1. ~~**mypy strict fails**~~ — FIXED in Task 1.
-2. **OrderBook.midpoint/spread** — Returns 0.0 or negative when asks/bids empty. MarketMaker now guards against one-sided books, but the underlying model still allows it.
-3. **Risk config not enforced** — `RiskConfig` loaded but never checked. No position-size, daily-loss, or open-order limits.
-4. **Signal.size semantics** — Ambiguous whether dollars or shares. Buy uses as cost, sell divides by price to get shares.
+2. **OrderBook.midpoint/spread** — Returns 0.0 or negative when asks/bids empty. MarketMaker guards against it, but the model still allows it.
+3. **Risk config not enforced** — `RiskConfig` loaded but never checked.
+4. **Signal.size semantics** — Ambiguous whether dollars or shares.
 5. **Database connection never closed** — No context manager, no cleanup on KeyboardInterrupt.
 
 ### Important
-6. **No subprocess timeout** — `_run_cli()` can hang indefinitely if CLI blocks.
+6. **No subprocess timeout** — `_run_cli()` can hang indefinitely.
 7. **Empty token_id signals** — SignalTrader emits `""` token_id when `clob_token_ids` missing.
 8. **No sell-side test coverage** — Paper trader sell path untested.
-9. **Config path relative to CWD** — Silently falls back to defaults if config.yaml not found.
-
-### From Phase 2 Code Review
-10. **MarketMaker `_max_inventory` not enforced** — Parameter is configured but never checked against portfolio state.
-11. **Arbitrageur `_min_deviation` not used** — Loaded from config but not referenced in `_check_price_sum()`. Reserved for future per-outcome deviation filtering.
-12. **Aggregator groups by `(market_id, side)` ignoring `token_id`** — Different strategies could select different tokens for the same market; loser's token_id is silently discarded.
-13. **Prompt injection surface** — AIAnalyst interpolates `market.question` and `market.description` (external data) directly into prompt. Future hardening: truncate inputs, use XML delimiters, add system message anchoring.
+9. **Config path relative to CWD** — Silently falls back to defaults.
+10. **MarketMaker `_max_inventory` not enforced** — Configured but unused.
+11. **Arbitrageur `_min_deviation` not used** — Configured but unused.
+12. **Prompt injection surface** — AIAnalyst interpolates external data directly into prompt.
 
 ## How to Work With This Codebase
 
@@ -241,14 +204,12 @@ uv sync
 
 ### Run Tests
 ```bash
-uv run pytest tests/ -v                    # all 58 tests
-uv run pytest tests/ -v --cov=src/polymarket_agent  # with coverage
+uv run pytest tests/ -v                    # all 63 tests
 ```
 
 ### Lint & Type Check
 ```bash
 uv run ruff check src/                     # lint (currently clean)
-uv run ruff format src/                    # format
 uv run mypy src/                           # type check (currently clean)
 ```
 
@@ -265,20 +226,12 @@ uv run polymarket-agent run                # continuous loop (Ctrl+C to stop)
 3. Add config block in `config.yaml` under `strategies:`
 4. Write tests in `tests/test_<name>.py`
 
-### Mocking CLI in Tests
-```python
-def _mock_run(args, **kwargs):
-    return subprocess.CompletedProcess(args=args, returncode=0, stdout=MOCK_JSON, stderr="")
-
-mocker.patch("polymarket_agent.data.client.subprocess.run", side_effect=_mock_run)
-```
-
 ## Phase Plan
 
 | Phase | Status | Description |
 |-------|--------|-------------|
 | **1: Data + Paper Trading** | COMPLETE | CLI wrapper, models, cache, paper executor, SignalTrader, orchestrator, CLI |
-| **2: Strategy Modules** | IN PROGRESS | All strategies + aggregation done; integration test + verification pending |
+| **2: Strategy Modules** | COMPLETE | MarketMaker, Arbitrageur, AIAnalyst, signal aggregation, config, integration test |
 | **3: MCP Server** | Planned | Expose tools for Claude (search_markets, place_trade, etc.) |
 | **4: Live Trading** | Planned | py-clob-client, wallet setup, real order execution |
 
@@ -292,8 +245,8 @@ See `docs/plans/2026-02-25-polymarket-agent-phase2.md` for detailed TDD plan wit
 4. ~~AIAnalyst strategy (Claude probability estimates)~~ DONE
 5. ~~Signal aggregation (dedup, confidence filtering, multi-strategy consensus)~~ DONE
 6. ~~Config updates for new strategies~~ DONE
-7. Integration test with all strategies — NEXT
-8. Final verification
+7. ~~Integration test with all strategies~~ DONE
+8. ~~Final verification~~ DONE
 
 ## Dependencies
 
@@ -305,13 +258,13 @@ See `docs/plans/2026-02-25-polymarket-agent-phase2.md` for detailed TDD plan wit
 
 - `docs/plans/2026-02-25-polymarket-agent-trader-design.md` — Full system design (architecture, all phases)
 - `docs/plans/2026-02-25-polymarket-agent-phase1.md` — Phase 1 implementation plan (COMPLETE)
-- `docs/plans/2026-02-25-polymarket-agent-phase2.md` — Phase 2 implementation plan (IN PROGRESS)
+- `docs/plans/2026-02-25-polymarket-agent-phase2.md` — Phase 2 implementation plan (COMPLETE)
 
 ## Verification Commands
 
 ```bash
 # Everything should pass
-uv run pytest tests/ -v           # 58 tests passing
+uv run pytest tests/ -v           # 63 tests passing
 uv run ruff check src/            # All checks passed
 uv run mypy src/                  # Success: no issues found in 19 source files
 uv run polymarket-agent tick      # Fetches live data, paper trades
