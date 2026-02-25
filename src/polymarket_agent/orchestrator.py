@@ -63,8 +63,8 @@ class Orchestrator:
 
         signals = aggregate_signals(
             raw_signals,
-            min_confidence=0.5,
-            min_strategies=1,
+            min_confidence=self._config.aggregation.min_confidence,
+            min_strategies=self._config.aggregation.min_strategies,
         )
         logger.info("Aggregated to %d signals", len(signals))
 
