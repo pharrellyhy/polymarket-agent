@@ -60,7 +60,9 @@ class Arbitrageur(Strategy):
             idx = market.outcome_prices.index(max(market.outcome_prices))
             side = "sell"
 
-        token_id = market.clob_token_ids[idx] if idx < len(market.clob_token_ids) else ""
+        if idx >= len(market.clob_token_ids):
+            return None
+        token_id = market.clob_token_ids[idx]
 
         return Signal(
             strategy=self.name,

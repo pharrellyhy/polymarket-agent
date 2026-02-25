@@ -52,7 +52,7 @@ class MarketMaker(Strategy):
             return []
         if market.liquidity < self._min_liquidity:
             return []
-        if not market.clob_token_ids:
+        if len(market.clob_token_ids) < 2:
             return []
 
         try:
@@ -73,7 +73,7 @@ class MarketMaker(Strategy):
         sell_price = _clamp(round(midpoint + half_spread, 4))
 
         token_yes = market.clob_token_ids[0]
-        token_sell = market.clob_token_ids[1] if len(market.clob_token_ids) > 1 else token_yes
+        token_sell = market.clob_token_ids[1]
 
         def _signal(side: Literal["buy", "sell"], price: float, token_id: str) -> Signal:
             label = "bid" if side == "buy" else "ask"

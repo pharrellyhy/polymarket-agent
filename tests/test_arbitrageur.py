@@ -62,3 +62,13 @@ def test_arbitrageur_configures_tolerance() -> None:
     strategy = Arbitrageur()
     strategy.configure({"price_sum_tolerance": 0.05})
     assert strategy._price_sum_tolerance == 0.05
+
+
+def test_arbitrageur_skips_signal_when_token_id_missing() -> None:
+    strategy = Arbitrageur()
+    market = _make_market("2", yes_price=0.60, no_price=0.35)
+    market.clob_token_ids = []
+
+    signals = strategy.analyze([market], MagicMock())
+
+    assert signals == []

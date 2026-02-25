@@ -10,9 +10,13 @@ from pydantic import BaseModel, Field
 
 def _parse_json_field(data: dict[str, Any], key: str) -> list[Any]:
     """Parse a CLI field that may be a JSON-encoded string or already a list."""
-    raw = data.get(key, "[]")
-    result: list[Any] = json.loads(raw) if isinstance(raw, str) else raw
-    return result
+    raw = data.get(key)
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, list) else []
+    return raw if isinstance(raw, list) else []
 
 
 def _str_field(data: dict[str, Any], key: str) -> str:
@@ -99,7 +103,7 @@ class Event(BaseModel):
             liquidity=_float_field(data, "liquidity"),
             volume=_float_field(data, "volume"),
             volume_24h=_float_field(data, "volume24hr"),
-            markets=[Market.from_cli(m) for m in data.get("markets", [])],
+            markets=[Market.from_cli(m) for m in (data.get("markets") or [])],
         )
 
 

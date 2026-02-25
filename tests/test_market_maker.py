@@ -67,3 +67,15 @@ def test_market_maker_configures_spread() -> None:
     strategy = MarketMaker()
     strategy.configure({"spread": 0.10})
     assert strategy._spread == 0.10
+
+
+def test_market_maker_skips_markets_with_missing_token_pair() -> None:
+    strategy = MarketMaker()
+    data = MagicMock()
+    data.get_orderbook.return_value = _mock_orderbook()
+    market = _make_market("3")
+    market.clob_token_ids = [market.clob_token_ids[0]]
+
+    signals = strategy.analyze([market], data)
+
+    assert signals == []
