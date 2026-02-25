@@ -100,7 +100,8 @@ class PolymarketData:
         """Return cached CLI output or execute and cache the result."""
         cached = self._cache.get(key)
         if cached is not None:
-            return cached  # type: ignore[return-value]
+            assert isinstance(cached, str)
+            return cached
         raw = self._run_cli(args)
         self._cache.set(key, raw)
         return raw

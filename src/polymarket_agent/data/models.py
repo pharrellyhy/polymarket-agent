@@ -11,7 +11,8 @@ from pydantic import BaseModel, Field
 def _parse_json_field(data: dict[str, Any], key: str) -> list[Any]:
     """Parse a CLI field that may be a JSON-encoded string or already a list."""
     raw = data.get(key, "[]")
-    return json.loads(raw) if isinstance(raw, str) else raw
+    result: list[Any] = json.loads(raw) if isinstance(raw, str) else raw
+    return result
 
 
 def _str_field(data: dict[str, Any], key: str) -> str:
