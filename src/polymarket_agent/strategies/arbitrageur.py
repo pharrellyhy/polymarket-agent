@@ -35,14 +35,12 @@ class Arbitrageur(Strategy):
         self._order_size = float(config.get("order_size", _DEFAULT_ORDER_SIZE))
 
     def analyze(self, markets: list[Market], data: Any) -> list[Signal]:
-        signals: list[Signal] = []
-        for market in markets:
-            if not market.active or market.closed:
-                continue
-            signal = self._check_price_sum(market)
-            if signal is not None:
-                signals.append(signal)
-        return signals
+        return [
+            s
+            for market in markets
+            if market.active and not market.closed
+            if (s := self._check_price_sum(market)) is not None
+        ]
 
     def _check_price_sum(self, market: Market) -> Signal | None:
         """Check if outcome prices sum to approximately 1.0."""
@@ -55,29 +53,22 @@ class Arbitrageur(Strategy):
         if deviation <= self._price_sum_tolerance:
             return None
 
-        # Buy the underpriced side
         if price_sum < 1.0:
-            # Outcomes are collectively underpriced — buy the cheaper one
-            min_idx = market.outcome_prices.index(min(market.outcome_prices))
+            idx = market.outcome_prices.index(min(market.outcome_prices))
             side: Literal["buy", "sell"] = "buy"
-            target_price = market.outcome_prices[min_idx]
-            token_id = market.clob_token_ids[min_idx] if min_idx < len(market.clob_token_ids) else ""
         else:
-            # Outcomes are collectively overpriced — sell the more expensive one
-            max_idx = market.outcome_prices.index(max(market.outcome_prices))
+            idx = market.outcome_prices.index(max(market.outcome_prices))
             side = "sell"
-            target_price = market.outcome_prices[max_idx]
-            token_id = market.clob_token_ids[max_idx] if max_idx < len(market.clob_token_ids) else ""
 
-        confidence = min(deviation / 0.1, 1.0)
+        token_id = market.clob_token_ids[idx] if idx < len(market.clob_token_ids) else ""
 
         return Signal(
             strategy=self.name,
             market_id=market.id,
             token_id=token_id,
             side=side,
-            confidence=round(confidence, 4),
-            target_price=target_price,
+            confidence=round(min(deviation / 0.1, 1.0), 4),
+            target_price=market.outcome_prices[idx],
             size=self._order_size,
             reason=f"price_sum={price_sum:.4f}, deviation={deviation:.4f}",
         )

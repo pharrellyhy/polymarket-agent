@@ -11,8 +11,8 @@ from polymarket_agent.data.client import PolymarketData
 from polymarket_agent.db import Database
 from polymarket_agent.execution.base import Portfolio
 from polymarket_agent.execution.paper import PaperTrader
-from polymarket_agent.strategies.base import Signal, Strategy
 from polymarket_agent.strategies.arbitrageur import Arbitrageur
+from polymarket_agent.strategies.base import Signal, Strategy
 from polymarket_agent.strategies.market_maker import MarketMaker
 from polymarket_agent.strategies.signal_trader import SignalTrader
 
