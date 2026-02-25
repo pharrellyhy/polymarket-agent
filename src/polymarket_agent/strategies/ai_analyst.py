@@ -108,10 +108,11 @@ class AIAnalyst(Strategy):
                 logger.warning("Could not parse probability from AI response: %s", text)
                 return None
             estimate = float(match.group(1))
-            self._call_timestamps.append(time.monotonic())
         except Exception:
             logger.exception("AI analyst call failed for market %s", market.id)
             return None
+        finally:
+            self._call_timestamps.append(time.monotonic())
 
         divergence = estimate - yes_price
 
