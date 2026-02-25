@@ -1,0 +1,41 @@
+default_stages: [pre-commit]
+repos:
+  # Repository to manage pre-commit hooks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.3.0
+    hooks:
+      - id: check-yaml                           # Check the syntax of YAML files
+      - id: check-vcs-permalinks                 # Ensure permalinks to version control systems are correct
+      - id: end-of-file-fixer                    # Ensure all files end in a newline
+        exclude: "^(tests|data|models)/.*"              # Exclude tests directory
+      - id: trailing-whitespace                  # Remove trailing whitespace
+        args: [--markdown-linebreak-ext=md]      # Ensure markdown files are processed correctly
+      - id: debug-statements                     # Check for debug statements
+
+  # Repository for Black formatter
+  # - repo: https://github.com/psf/black
+  #   rev: 23.1.0
+  #   hooks:
+  #     - id: black
+  #       additional_dependencies: ['tomli']       # Required for pyproject.toml parsing by Black
+  #       args: [--skip-string-normalization, --line-length=120]  # Formatting options for Black
+
+  # Repository for Ruff static analyzer
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.12.1
+    hooks:
+      - id: ruff-check                                # Run Ruff to analyze Python syntax
+        types_or: [ python, pyi ]
+        args: [--fix, '--line-length=120', '--ignore=E501']  # Ignore selected linting warnings
+      - id: ruff-format
+        types_or: [ python, pyi ]
+
+  # Repository for Isort import sorter
+  - repo: https://github.com/PyCQA/isort
+    rev: 5.12.0
+    hooks:
+      - id: isort
+        args: [--profile, black]                   # Configure isort to match Black's profile
+
+# Configuration option to stop running hooks after the first failure
+fail_fast: false

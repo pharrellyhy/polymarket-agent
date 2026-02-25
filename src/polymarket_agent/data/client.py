@@ -90,7 +90,7 @@ class PolymarketData:
         Raises :class:`RuntimeError` when the process exits with a
         non-zero return code.
         """
-        result = subprocess.run(args, capture_output=True, text=True)  # noqa: S603
+        result = subprocess.run(args, capture_output=True, text=True, check=False)  # noqa: S603
         if result.returncode != 0:
             msg = f"polymarket CLI failed (rc={result.returncode}): {result.stderr}"
             raise RuntimeError(msg)

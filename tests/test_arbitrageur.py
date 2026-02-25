@@ -20,7 +20,7 @@ def _make_market(
         {
             "id": market_id,
             "question": f"Test market {market_id}?",
-            "outcomes": '[\"Yes\",\"No\"]',
+            "outcomes": '["Yes","No"]',
             "outcomePrices": json.dumps([str(yes_price), str(no_price)]),
             "volume": "50000",
             "volume24hr": "10000",
