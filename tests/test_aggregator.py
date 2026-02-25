@@ -1,10 +1,14 @@
 """Tests for signal aggregation."""
 
+from typing import Literal
+
 from polymarket_agent.strategies.aggregator import aggregate_signals
 from polymarket_agent.strategies.base import Signal
 
 
-def _signal(strategy: str, market_id: str, side: str = "buy", confidence: float = 0.8) -> Signal:
+def _signal(
+    strategy: str, market_id: str, side: Literal["buy", "sell"] = "buy", confidence: float = 0.8
+) -> Signal:
     return Signal(
         strategy=strategy,
         market_id=market_id,

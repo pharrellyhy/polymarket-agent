@@ -68,8 +68,7 @@ class AIAnalyst(Strategy):
                 continue
             if not self._can_call():
                 break
-            signal = self._evaluate(market)
-            if signal is not None:
+            if (signal := self._evaluate(market)) is not None:
                 signals.append(signal)
         return signals
 
@@ -98,18 +97,18 @@ class AIAnalyst(Strategy):
         )
 
         try:
-            self._call_timestamps.append(time.monotonic())
             response = self._client.messages.create(
                 model=self._model,
                 max_tokens=10,
                 messages=[{"role": "user", "content": prompt}],
             )
             text: str = response.content[0].text.strip()
-            match = re.search(r"(\d+\.?\d*)", text)
+            match = re.search(r"\b(0(?:\.\d+)?|1(?:\.0+)?)\b", text)
             if not match:
                 logger.warning("Could not parse probability from AI response: %s", text)
                 return None
-            estimate = max(0.0, min(1.0, float(match.group(1))))
+            estimate = float(match.group(1))
+            self._call_timestamps.append(time.monotonic())
         except Exception:
             logger.exception("AI analyst call failed for market %s", market.id)
             return None
@@ -119,12 +118,10 @@ class AIAnalyst(Strategy):
         if abs(divergence) < self._min_divergence:
             return None
 
-        if divergence > 0:
-            side: Literal["buy", "sell"] = "buy"
-            token_id = market.clob_token_ids[0]
-        else:
-            side = "sell"
-            token_id = market.clob_token_ids[1] if len(market.clob_token_ids) > 1 else market.clob_token_ids[0]
+        # Positive divergence → AI thinks Yes is underpriced → buy Yes token
+        # Negative divergence → AI thinks Yes is overpriced → sell Yes token
+        side: Literal["buy", "sell"] = "buy" if divergence > 0 else "sell"
+        token_id = market.clob_token_ids[0]
 
         confidence = min(abs(divergence) / 0.3, 1.0)
 

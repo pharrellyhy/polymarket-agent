@@ -44,9 +44,5 @@ def test_default_config() -> None:
     assert config.mode == "paper"
     assert config.starting_balance == 1000.0
     assert config.risk.max_position_size == 100.0
-
-
-def test_aggregation_config_defaults() -> None:
-    config = AppConfig()
     assert config.aggregation.min_confidence == 0.5
     assert config.aggregation.min_strategies == 1

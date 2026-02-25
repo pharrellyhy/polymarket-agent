@@ -21,6 +21,7 @@ strategies:
     model: claude-sonnet-4-6
     max_calls_per_hour: 20
     min_divergence: 0.15
+    order_size: 25.0
 
 aggregation:
   min_confidence: 0.5

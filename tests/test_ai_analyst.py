@@ -25,20 +25,22 @@ def _make_market(market_id: str = "100", yes_price: float = 0.5) -> Market:
     )
 
 
+def _mock_client(response_text: str) -> MagicMock:
+    """Create a mock Anthropic client that returns the given text."""
+    client = MagicMock()
+    response = MagicMock()
+    response.content = [MagicMock(text=response_text)]
+    client.messages.create.return_value = response
+    return client
+
+
 def test_ai_analyst_generates_signal_on_divergence() -> None:
     """If AI estimate diverges from market price, emit a signal."""
     strategy = AIAnalyst()
     strategy.configure({"min_divergence": 0.10, "max_calls_per_hour": 100})
+    strategy._client = _mock_client("0.80")
 
-    mock_client = MagicMock()
-    mock_response = MagicMock()
-    mock_response.content = [MagicMock(text="0.80")]
-    mock_client.messages.create.return_value = mock_response
-    strategy._client = mock_client
-
-    market = _make_market("1", yes_price=0.50)
-    data = MagicMock()
-    signals = strategy.analyze([market], data)
+    signals = strategy.analyze([_make_market("1", yes_price=0.50)], MagicMock())
     assert len(signals) == 1
     assert signals[0].side == "buy"
 
@@ -47,16 +49,9 @@ def test_ai_analyst_no_signal_when_aligned() -> None:
     """If AI estimate is close to market price, no signal."""
     strategy = AIAnalyst()
     strategy.configure({"min_divergence": 0.10})
+    strategy._client = _mock_client("0.52")
 
-    mock_client = MagicMock()
-    mock_response = MagicMock()
-    mock_response.content = [MagicMock(text="0.52")]
-    mock_client.messages.create.return_value = mock_response
-    strategy._client = mock_client
-
-    market = _make_market("1", yes_price=0.50)
-    data = MagicMock()
-    signals = strategy.analyze([market], data)
+    signals = strategy.analyze([_make_market("1", yes_price=0.50)], MagicMock())
     assert len(signals) == 0
 
 
@@ -64,26 +59,52 @@ def test_ai_analyst_graceful_without_api_key() -> None:
     """Strategy should return empty signals if no API key is available."""
     with patch.dict("os.environ", {}, clear=True):
         strategy = AIAnalyst()
-        strategy.configure({})
-        if strategy._client is None:
-            market = _make_market("1", yes_price=0.50)
-            data = MagicMock()
-            signals = strategy.analyze([market], data)
-            assert len(signals) == 0
+        assert strategy._client is None
+        signals = strategy.analyze([_make_market("1", yes_price=0.50)], MagicMock())
+        assert len(signals) == 0
+
+
+def test_ai_analyst_generates_sell_signal_on_negative_divergence() -> None:
+    """If AI estimate is below market price, emit a sell signal."""
+    strategy = AIAnalyst()
+    strategy.configure({"min_divergence": 0.10, "max_calls_per_hour": 100})
+    strategy._client = _mock_client("0.20")
+
+    signals = strategy.analyze([_make_market("1", yes_price=0.50)], MagicMock())
+    assert len(signals) == 1
+    assert signals[0].side == "sell"
+    assert signals[0].token_id == "0xtok_1_yes"
+
+
+def test_ai_analyst_handles_unparseable_response() -> None:
+    """If AI returns text that cannot be parsed, no signal is emitted."""
+    strategy = AIAnalyst()
+    strategy.configure({"min_divergence": 0.10, "max_calls_per_hour": 100})
+    strategy._client = _mock_client("I cannot estimate this")
+
+    signals = strategy.analyze([_make_market("1", yes_price=0.50)], MagicMock())
+    assert len(signals) == 0
+
+
+def test_ai_analyst_handles_api_exception() -> None:
+    """If the API call raises an exception, no signal and no crash."""
+    strategy = AIAnalyst()
+    strategy.configure({"min_divergence": 0.10, "max_calls_per_hour": 100})
+    client = MagicMock()
+    client.messages.create.side_effect = RuntimeError("API down")
+    strategy._client = client
+
+    signals = strategy.analyze([_make_market("1", yes_price=0.50)], MagicMock())
+    assert len(signals) == 0
 
 
 def test_ai_analyst_respects_rate_limit() -> None:
     """Strategy should stop calling API after hitting rate limit."""
     strategy = AIAnalyst()
     strategy.configure({"max_calls_per_hour": 2})
-
-    mock_client = MagicMock()
-    mock_response = MagicMock()
-    mock_response.content = [MagicMock(text="0.80")]
-    mock_client.messages.create.return_value = mock_response
-    strategy._client = mock_client
+    mock = _mock_client("0.80")
+    strategy._client = mock
 
     markets = [_make_market(str(i), yes_price=0.50) for i in range(5)]
-    data = MagicMock()
-    signals = strategy.analyze(markets, data)
-    assert mock_client.messages.create.call_count <= 2
+    strategy.analyze(markets, MagicMock())
+    assert mock.messages.create.call_count <= 2
