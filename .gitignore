@@ -1,0 +1,409 @@
+# ============================================================================
+# LLM Chatbot Serving - .gitignore
+# ============================================================================
+
+# ============================================================================
+# Operating System Files
+# ============================================================================
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+*.tmp
+Desktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+*.lnk
+
+# Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# ============================================================================
+# Python
+# ============================================================================
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+cover/
+
+# Translations
+*.mo
+*.pot
+
+# Django
+*.log
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+
+# Flask
+instance/
+.webassets-cache
+
+# Scrapy
+.scrapy
+
+# Sphinx documentation
+docs/_build/
+
+# PyBuilder
+.pybuilder/
+target/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IPython
+profile_default/
+ipython_config.py
+
+# pyenv
+.python-version
+
+# pipenv
+Pipfile.lock
+
+# poetry
+poetry.lock
+
+# celery beat schedule file
+celerybeat-schedule
+celerybeat.pid
+
+# SageMath parsed files
+*.sage.py
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Spyder project settings
+.spyderproject
+.spyproject
+
+# Rope project settings
+.ropeproject
+
+# mkdocs documentation
+/site
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# pytype static type analyzer
+.pytype/
+
+# Cython debug symbols
+cython_debug/
+
+# ============================================================================
+# IDEs and Editors
+# ============================================================================
+
+# Visual Studio Code
+.vscode/
+*.code-workspace
+
+# IntelliJ / PyCharm
+.idea/
+*.iws
+*.iml
+*.ipr
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+*.swp
+*.swo
+*~
+.vim/
+
+# Emacs
+*~
+\#*\#
+/.emacs.desktop
+/.emacs.desktop.lock
+*.elc
+auto-save-list
+tramp
+.\#*
+
+# Atom
+.atom/
+
+# VSCode
+.history/
+
+# ============================================================================
+# Development Tools
+# ============================================================================
+
+# CTags
+.tags
+tags
+TAGS
+
+# CScope
+.files
+.out
+
+# Make
+*.make
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+cmake_install.cmake
+Makefile
+install_manifest.txt
+compile_commands.json
+CTestTestfile.cmake
+
+# ============================================================================
+# Application Specific
+# ============================================================================
+
+# Environment files
+.env*
+!.env.example
+app/.env
+
+# Application logs
+*.log
+app/logs/
+logs/
+*/apps/saves
+
+outputs
+refs
+
+# Database files
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+app/db/*.db
+!app/db/.gitkeep
+
+# Model files (large ML models)
+# app/models/
+# models/
+*.model
+*.bin
+*.pkl
+*.pickle
+*.h5
+*.hdf5
+
+data/media
+
+# ============================================================================
+# Dependencies and Package Managers
+# ============================================================================
+
+# Node.js (if any frontend components)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.npm
+.yarn-integrity
+
+# Python packages
+pip-wheel-metadata/
+/poetry.tom
+poetry/core/*
+
+# ============================================================================
+# Build and Deployment
+# ============================================================================
+
+# Docker
+.dockerignore
+docker-compose.override.yml
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.travis.yml
+.circleci/
+
+# Deployment
+/releases/*
+deploy/
+deployment/
+
+# ============================================================================
+# Testing
+# ============================================================================
+
+# Test files and directories
+# (tests/ directory is tracked for this project)
+
+# Test coverage
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Test databases
+test.db
+test_*.db
+
+# ============================================================================
+# Documentation
+# ============================================================================
+
+# Temporary documentation files
+docs/_build/
+docs/build/
+/site
+
+# Generated documentation
+*.pdf
+*.epub
+
+# ============================================================================
+# Temporary and Cache Files
+# ============================================================================
+
+# General temporary files
+*.tmp
+*.temp
+.tmp/
+.temp/
+tmp/
+temp/
+
+# Backup files
+*.bak
+*.backup
+*.old
+*.orig
+
+# Cache directories
+.cache/
+cache/
+
+# ============================================================================
+# Security and Secrets
+# ============================================================================
+
+# API keys and secrets
+*.key
+*.pem
+*.crt
+*.cert
+secrets/
+.secrets/
+
+*.elaborate-baton*.json
+
+# SSH keys
+id_rsa
+id_rsa.pub
+*.ppk
+
+# ============================================================================
+# Project Specific Exclusions
+# ============================================================================
+
+# AI and development assistants
+.aider*
+.cursor/
+
+# ============================================================================
+# Claude
+# ============================================================================
+CLAUDE-old*.md
+CLAUDE-backup*.md

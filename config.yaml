@@ -1,0 +1,14 @@
+mode: paper
+starting_balance: 1000.0
+poll_interval: 60
+
+strategies:
+  signal_trader:
+    enabled: true
+    volume_threshold: 10000
+    price_move_threshold: 0.05
+
+risk:
+  max_position_size: 100.0
+  max_daily_loss: 50.0
+  max_open_orders: 10
