@@ -46,7 +46,7 @@ class AIAnalyst(Strategy):
             logger.info("ANTHROPIC_API_KEY not set — AIAnalyst disabled")
             return
         try:
-            import anthropic
+            import anthropic  # noqa: PLC0415
 
             self._client = anthropic.Anthropic(api_key=api_key)
         except ImportError:
