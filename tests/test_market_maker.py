@@ -67,6 +67,7 @@ def test_market_maker_configures_spread() -> None:
     strategy = MarketMaker()
     strategy.configure({"spread": 0.10})
     assert strategy._spread == 0.10
+    assert not hasattr(strategy, "_max_inventory")
 
 
 def test_market_maker_skips_markets_with_missing_token_pair() -> None:

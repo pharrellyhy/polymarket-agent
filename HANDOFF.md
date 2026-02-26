@@ -4,6 +4,144 @@ Last updated: 2026-02-26
 
 ---
 
+## Session Entry — 2026-02-26 (Phase 4 Follow-Up: Risk Gate Performance Optimization)
+
+### Problem
+- Previous follow-up review left a known performance risk: `tick()` called `_check_risk()` per signal, and `_check_risk()` recomputed daily loss (DB scan) and open-order count (executor/API call) each time.
+- In live mode this could cause repeated CLOB API calls and unnecessary DB work for a single tick with many signals.
+
+### Solution
+- **Per-tick risk snapshot:** Added a private `_RiskSnapshot` dataclass and `_build_risk_snapshot()` helper so `tick()` computes `daily_loss` and `open_orders` once at the start of execution.
+- **Snapshot reuse in order path:** `tick()` now passes the precomputed risk snapshot into `place_order(...)`, and `_check_risk(...)` consumes the snapshot instead of refetching DB/API state for each signal.
+- **Incremental snapshot updates:** After each accepted order in `tick()`, `_update_risk_snapshot_after_order()` updates the cached `daily_loss` (buy increases loss, sell reduces it) and increments open-order count in live mode.
+- **No behavior change for manual callers:** `Orchestrator.place_order()` still performs fresh risk checks when called without a snapshot (for example MCP manual trades).
+- **Regression coverage:** Added a test that verifies `tick()` only calls `_calculate_daily_loss()` and `get_open_orders()` once across a multi-signal batch.
+
+### Edits
+- `src/polymarket_agent/orchestrator.py` — added `_RiskSnapshot`, `_build_risk_snapshot()`, `_update_risk_snapshot_after_order()`, and optional snapshot reuse in `place_order()` / `_check_risk()`
+- `tests/test_risk_gate.py` — added per-tick risk snapshot reuse regression test
+- `HANDOFF.md` — added this follow-up entry
+
+### NOT Changed
+- No changes to risk limit thresholds/semantics (`max_position_size`, `max_daily_loss`, `max_open_orders`).
+- Snapshot open-order updates are intentionally conservative in live mode (increments after accepted order) rather than refetching from the API after each order.
+
+### Verification
+```bash
+uv run pytest tests/test_risk_gate.py -q                      # 9 passed
+uv run ruff check src/polymarket_agent/orchestrator.py tests/test_risk_gate.py   # All checks passed
+uv run mypy src/polymarket_agent/orchestrator.py              # Success: no issues found in 1 source file
+```
+
+### Branch
+- Working branch: `main`
+
+---
+
+## Session Entry — 2026-02-26 (Phase 4 Follow-Up: Review + Safety Fixes)
+
+### Problem
+- Reviewed the newly added Phase 4 live-trading/risk-management changes from the top handoff entry.
+- Found correctness and safety gaps in the new code paths:
+  - `LiveTrader` used `Signal.size` (USDC) directly as CLOB limit-order `size` instead of share quantity.
+  - CLI live confirmation guard existed for `run` but could be bypassed via `tick`.
+  - `Orchestrator.place_order()` bypassed the new risk gate, so manual callers (including MCP manual trades) could skip risk checks.
+
+### Solution
+- **LiveTrader order size fix (High):** Converted limit-order `OrderArgs.size` to share quantity (`signal.size / signal.target_price`) so live orders align with the project-wide `Signal.size` = USDC convention. Added a guard rejecting non-positive prices before API calls.
+- **Risk gate centralization:** `Orchestrator.place_order()` now enforces monitor-mode and `_check_risk()` before delegating to the executor. `tick()` was simplified to reuse `place_order()` instead of duplicating risk logic in its execution loop.
+- **CLI live safety tightened:** `polymarket-agent tick` now requires the same explicit `--live` confirmation flag as `run` when `mode: live`. `run` also performs the flag check before constructing the orchestrator, so it no longer fails early on missing live credentials before showing the safety message.
+- **MCP lifecycle cleanup:** `mcp_server` lifespan now calls `orch.close()` in `finally`, ensuring DB/resources are released when the server shuts down.
+- **Tests strengthened:** Added/updated regression coverage for live order share conversion, non-positive live price rejection, orchestrator manual-order risk gating, and `tick --live` confirmation.
+
+### Edits
+- `src/polymarket_agent/execution/live.py` — fixed limit-order size units (USDC -> shares), added non-positive price guard
+- `src/polymarket_agent/orchestrator.py` — moved risk/mode checks into `place_order()` and simplified `tick()` to reuse it
+- `src/polymarket_agent/cli.py` — early `run --live` guard before orchestrator construction; added `tick --live` confirmation guard
+- `src/polymarket_agent/mcp_server.py` — added orchestrator cleanup in lifespan `finally`
+- `tests/test_live_trader.py` — asserted CLOB `OrderArgs.size` receives share quantity; added invalid-price regression test
+- `tests/test_risk_gate.py` — added manual `Orchestrator.place_order()` risk-gate regression test
+- `tests/test_cli.py` — strengthened `run --live` test and added `tick --live` confirmation test
+- `HANDOFF.md` — added this follow-up entry
+
+### NOT Changed
+- Did not refactor the risk gate performance path: `tick()` still recomputes daily loss / open orders per signal via `_check_risk()`, which may be expensive in live mode (DB scan + CLOB open-orders fetch each time).
+- No full test suite rerun (focused verification only for reviewed/changed Phase 4 + CLI/MCP files).
+
+### Verification
+```bash
+uv run pytest tests/test_live_trader.py tests/test_risk_gate.py tests/test_cli.py tests/test_mcp_server.py -q   # 44 passed
+uv run ruff check src/polymarket_agent/cli.py src/polymarket_agent/orchestrator.py src/polymarket_agent/execution/live.py src/polymarket_agent/mcp_server.py tests/test_live_trader.py tests/test_risk_gate.py tests/test_cli.py   # All checks passed
+uv run mypy src/polymarket_agent/cli.py src/polymarket_agent/orchestrator.py src/polymarket_agent/execution/live.py src/polymarket_agent/mcp_server.py   # Success: no issues found in 4 source files
+```
+
+### Branch
+- Working branch: `main`
+
+---
+
+## Session Entry — 2026-02-26 (Phase 4: Live Trading + Risk Management + Review Fixes)
+
+### Problem
+- Phase 4 pending: live order execution via py-clob-client, risk management enforcement, and several known issues from code review.
+- Code review (Codex) flagged: prompt injection in AIAnalyst, orchestrator ignoring config mode, unused strategy config params.
+
+### Solution
+
+**Phase 4 Implementation:**
+- **LiveTrader (`execution/live.py`)** — new Executor wrapping py-clob-client ClobClient for real order placement. Limit orders (GTC), trade logging to SQLite, cancel/open order support. Lazy imports for optional dependency. `from_env()` factory reads `POLYMARKET_PRIVATE_KEY` and optional `POLYMARKET_FUNDER` env vars.
+- **Executor factory** — Orchestrator now selects PaperTrader or LiveTrader based on `config.mode`. Live mode imports LiveTrader lazily and calls `from_env()`.
+- **Risk gate** — `_check_risk(signal)` method in Orchestrator enforces `max_position_size`, `max_daily_loss`, and `max_open_orders` before every trade execution. Daily loss calculated from same-day DB trades.
+- **Executor ABC extension** — Added `cancel_order()` and `get_open_orders()` with default implementations (PaperTrader returns False/[]).
+- **Database context manager** — `Database.__enter__`/`__exit__` for proper connection cleanup.
+- **Subprocess timeout** — `_run_cli()` now has `timeout=30.0` parameter, raises RuntimeError on timeout.
+- **CLI safety** — `polymarket-agent run --live` flag required for live mode. All CLI commands now call `orch.close()` in finally blocks.
+- **py-clob-client optional dependency** — `pip install polymarket-agent[live]` installs py-clob-client.
+
+**Code Review Fixes:**
+- **Prompt injection (High)** — AIAnalyst now sanitizes market text: strips control characters, truncates to 500/1000 chars, uses explicit `--- BEGIN/END MARKET DATA ---` delimiters.
+- **Arbitrageur min_deviation (Low)** — Now enforced: deviation must exceed both `price_sum_tolerance` AND `min_deviation` to generate a signal.
+- **MarketMaker max_inventory (Low)** — Removed dead config parameter. Position-level limits handled by Orchestrator risk gate.
+- **README AI docs (Medium)** — Skipped: code already gracefully degrades with clear error messages, per CLAUDE.md guidelines.
+
+### Edits
+- `pyproject.toml` — added `[project.optional-dependencies] live = ["py-clob-client>=0.0.1"]`
+- `src/polymarket_agent/execution/base.py` — added `cancel_order()` and `get_open_orders()` to Executor ABC
+- `src/polymarket_agent/execution/live.py` — **NEW** (LiveTrader with ClobClient wrapper)
+- `src/polymarket_agent/orchestrator.py` — added `_build_executor()`, `_check_risk()`, `_calculate_daily_loss()`, `close()`; risk gate integrated into `tick()`
+- `src/polymarket_agent/data/client.py` — added `timeout=30.0` to `_run_cli()`
+- `src/polymarket_agent/db.py` — added `__enter__`/`__exit__` context manager
+- `src/polymarket_agent/cli.py` — added `--live` flag to `run`, `orch.close()` in all commands
+- `src/polymarket_agent/strategies/ai_analyst.py` — added `_sanitize_text()`, market text sanitization with delimiters
+- `src/polymarket_agent/strategies/arbitrageur.py` — wired `_min_deviation` into signal gating logic
+- `src/polymarket_agent/strategies/market_maker.py` — removed dead `_max_inventory` config
+- `docs/plans/2026-02-26-polymarket-agent-phase4.md` — **NEW** (Phase 4 design doc)
+- `tests/test_live_trader.py` — **NEW** (8 tests: init, from_env, place_order success/failure/rejected, cancel, open_orders)
+- `tests/test_risk_gate.py` — **NEW** (7 tests: oversized, valid, daily loss, integrated tick, factory, live env, close)
+- `tests/test_ai_analyst.py` — added sanitization test
+- `tests/test_arbitrageur.py` — added min_deviation test
+- `tests/test_market_maker.py` — updated config test to verify no max_inventory
+- `tests/test_db.py` — added context manager test
+- `tests/test_cli.py` — added --live flag test
+- `tests/test_client.py` — added timeout test
+
+### NOT Changed
+- No changes to MCP server (already delegates to Orchestrator which now has the new executor/risk logic).
+- No changes to strategy logic (except the 3 review fixes above).
+- Pre-existing ruff isort issues in test_cli.py, test_client.py, test_db.py, test_paper_trader.py left as-is.
+
+### Verification
+```bash
+uv run pytest tests/ -v           # 109 passed
+uv run ruff check src/            # All checks passed
+uv run mypy src/                  # Success: no issues found in 21 source files
+```
+
+### Branch
+- Working branch: `main`
+
+---
+
 ## Session Entry — 2026-02-26 (Phase 3 MCP Follow-Up: Signal Cache Split)
 
 ### Problem
@@ -245,22 +383,25 @@ uv run polymarket-agent tick      # 50 markets, 9 signals, 5 trades (live data)
 
 **Polymarket Agent** is a Python auto-trading pipeline for Polymarket prediction markets. It wraps the official `polymarket` CLI (v0.1.4, installed via Homebrew) into a structured system with pluggable trading strategies, paper/live execution, and MCP server integration for AI agents.
 
-## Current State: Phase 3 COMPLETE
+## Current State: Phase 4 COMPLETE
 
-- 85 tests passing, ruff lint clean, mypy strict clean (20 source files)
+- 109 tests passing, ruff lint clean, mypy strict clean (21 source files)
 - All 4 strategies implemented: SignalTrader, MarketMaker, Arbitrageur, AIAnalyst
 - Signal aggregation integrated (groups by market+token+side, unique strategy consensus)
 - MCP server with 9 tools: search_markets, get_market_detail, get_price_history, get_leaderboard, get_portfolio, get_signals, refresh_signals, place_trade, analyze_market
-- CLI commands: `run`, `status`, `tick`, `mcp`
+- LiveTrader with py-clob-client for real order execution
+- Risk management: max_position_size, max_daily_loss, max_open_orders enforced in Orchestrator
+- CLI commands: `run` (with `--live` safety flag), `status`, `tick`, `mcp`
 
 ## Architecture
 
 ```
-CLI (Typer) → Orchestrator → Data Layer (CLI wrapper + cache)
+CLI (Typer) → Orchestrator → Data Layer (CLI wrapper + cache + 30s timeout)
                            → Strategy Engine (pluggable ABCs)
                            → Signal Aggregation (dedup, confidence, consensus)
-                           → Execution Layer (Paper/Live)
-                           → SQLite (trade logging)
+                           → Risk Gate (position size, daily loss, open orders)
+                           → Execution Layer (Paper/Live via factory)
+                           → SQLite (trade logging, context manager)
 
 MCP Server (FastMCP, stdio) → AppContext → Orchestrator + Data + Config
   ├── search_markets, get_market_detail, get_price_history, get_leaderboard
@@ -286,8 +427,9 @@ MCP Server (FastMCP, stdio) → AppContext → Orchestrator + Data + Config
 | `src/polymarket_agent/strategies/arbitrageur.py` | Price-sum deviation detection |
 | `src/polymarket_agent/strategies/ai_analyst.py` | Claude probability estimates + divergence trading |
 | `src/polymarket_agent/strategies/aggregator.py` | Signal dedup, confidence filtering, consensus |
-| `src/polymarket_agent/execution/base.py` | Executor ABC + Portfolio + Order |
+| `src/polymarket_agent/execution/base.py` | Executor ABC + Portfolio + Order + cancel_order/get_open_orders |
 | `src/polymarket_agent/execution/paper.py` | Paper trading with virtual USDC |
+| `src/polymarket_agent/execution/live.py` | Live trading via py-clob-client (optional dep) |
 | `src/polymarket_agent/mcp_server.py` | MCP server: 9 tools, lifespan context, module-level `mcp` + `configure()` |
 | `config.yaml` | Default config (paper mode, $1000, 4 strategies, aggregation) |
 | `pyproject.toml` | Project config (deps incl. mcp>=1.0, ruff, mypy) |
@@ -301,25 +443,28 @@ MCP Server (FastMCP, stdio) → AppContext → Orchestrator + Data + Config
 5. **Signal dataclass** — `strategy`, `market_id`, `token_id`, `side` (buy/sell), `confidence`, `target_price`, `size` (USDC), `reason`.
 6. **Signal aggregation** — `aggregate_signals()` groups by `(market_id, token_id, side)`, deduplicates (highest confidence wins), filters by `min_confidence`, enforces `min_strategies` consensus (unique strategy names). Runs between strategy collection and execution in `tick()`.
 7. **MCP server** — FastMCP with lifespan context. `AppContext` dataclass holds Orchestrator + PolymarketData + AppConfig. Tools are thin wrappers that delegate to existing layers. `configure()` sets config/db paths for the module-level `mcp` instance before `mcp.run()`.
+8. **Executor factory** — `_build_executor()` in Orchestrator selects PaperTrader or LiveTrader based on `config.mode`. Live mode lazily imports LiveTrader and reads env vars.
+9. **Risk gate** — `_check_risk()` enforces max_position_size, max_daily_loss, max_open_orders before every trade in `tick()`.
+10. **LiveTrader** — Thin wrapper around py-clob-client ClobClient. Limit orders (GTC), lazy imports, `from_env()` factory for env var auth.
 
 ## Known Issues from Code Review
 
 ### Critical
 1. ~~**mypy strict fails**~~ — FIXED in Phase 2 Task 1.
 2. **OrderBook.midpoint/spread** — Returns 0.0 or negative when asks/bids empty. MarketMaker guards against it, but the model still allows it.
-3. **Risk config not enforced** — `RiskConfig` loaded but never checked.
-4. **Signal.size semantics** — Ambiguous whether dollars or shares.
-5. **Database connection never closed** — No context manager, no cleanup on KeyboardInterrupt.
+3. ~~**Risk config not enforced**~~ — FIXED in Phase 4. `_check_risk()` enforces all 3 limits.
+4. **Signal.size semantics** — Ambiguous whether dollars or shares. (Currently: USDC dollars.)
+5. ~~**Database connection never closed**~~ — FIXED in Phase 4. Context manager + `orch.close()` in CLI.
 
 ### Important
-6. **No subprocess timeout** — `_run_cli()` can hang indefinitely.
+6. ~~**No subprocess timeout**~~ — FIXED in Phase 4. `_run_cli()` has 30s timeout.
 7. **Empty token_id signals** — SignalTrader emits `""` token_id when `clob_token_ids` missing.
 8. **No sell-side test coverage** — Paper trader sell path untested.
 9. **Config path relative to CWD** — Silently falls back to defaults.
-10. **MarketMaker `_max_inventory` not enforced** — Configured but unused.
-11. **Arbitrageur `_min_deviation` not used** — Configured but unused.
-12. **Prompt injection surface** — AIAnalyst interpolates external data directly into prompt.
-13. **MCP tools access private attributes** — `get_signals` and `place_trade` access `orch._strategies` and `orch._executor` directly. Consider adding public methods to Orchestrator.
+10. ~~**MarketMaker `_max_inventory` not enforced**~~ — FIXED in Phase 4. Removed dead config; position limits enforced by Orchestrator risk gate.
+11. ~~**Arbitrageur `_min_deviation` not used**~~ — FIXED in Phase 4. Now used in signal gating logic.
+12. ~~**Prompt injection surface**~~ — FIXED in Phase 4. AIAnalyst sanitizes external text (strip control chars, truncate, delimiters).
+13. ~~**MCP tools access private attributes**~~ — FIXED in Phase 3. Public methods added to Orchestrator.
 
 ## How to Work With This Codebase
 
@@ -374,7 +519,7 @@ The MCP server runs via stdio transport. To use with Claude Code, add to your MC
 | **1: Data + Paper Trading** | COMPLETE | CLI wrapper, models, cache, paper executor, SignalTrader, orchestrator, CLI |
 | **2: Strategy Modules** | COMPLETE | MarketMaker, Arbitrageur, AIAnalyst, signal aggregation, config, integration test |
 | **3: MCP Server** | COMPLETE | 9 MCP tools, lifespan context, CLI integration, expanded MCP test coverage |
-| **4: Live Trading** | Planned | py-clob-client, wallet setup, real order execution |
+| **4: Live Trading** | COMPLETE | LiveTrader (py-clob-client), risk management, executor factory, DB cleanup, CLI safety |
 
 ## Phase 3 Implementation Plan
 
@@ -390,6 +535,7 @@ See `docs/plans/2026-02-26-polymarket-agent-phase3.md` for detailed plan with 6 
 ## Dependencies
 
 **Runtime:** pydantic>=2.0, pyyaml>=6.0, typer>=0.9, anthropic>=0.84, mcp>=1.0
+**Optional (live):** py-clob-client>=0.0.1 (`pip install polymarket-agent[live]`)
 **Dev:** pytest>=8.0, pytest-mock>=3.0, ruff>=0.4, mypy>=1.10, types-PyYAML
 **External:** `polymarket` CLI (Homebrew: `brew install polymarket`)
 
@@ -404,9 +550,10 @@ See `docs/plans/2026-02-26-polymarket-agent-phase3.md` for detailed plan with 6 
 
 ```bash
 # Everything should pass
-uv run pytest tests/ -v           # 85 tests passing
+uv run pytest tests/ -v           # 109 tests passing
 uv run ruff check src/            # All checks passed
-uv run mypy src/                  # Success: no issues found in 20 source files
+uv run mypy src/                  # Success: no issues found in 21 source files
 uv run polymarket-agent tick      # Fetches live data, paper trades
 uv run polymarket-agent mcp       # Starts MCP server (stdio transport)
+uv run polymarket-agent run --live  # Live trading (requires POLYMARKET_PRIVATE_KEY)
 ```

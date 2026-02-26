@@ -16,6 +16,15 @@ _DEFAULT_MAX_CALLS_PER_HOUR: int = 20
 _DEFAULT_MIN_DIVERGENCE: float = 0.15
 _DEFAULT_ORDER_SIZE: float = 25.0
 
+_MAX_QUESTION_LEN: int = 500
+_MAX_DESCRIPTION_LEN: int = 1000
+
+
+def _sanitize_text(text: str, max_len: int) -> str:
+    """Truncate and strip control characters from external text."""
+    cleaned = "".join(ch for ch in text if ch.isprintable() or ch in ("\n", " "))
+    return cleaned[:max_len]
+
 
 class AIAnalyst(Strategy):
     """Ask Claude for probability estimates and trade on divergence.
@@ -82,16 +91,20 @@ class AIAnalyst(Strategy):
 
         yes_price = market.outcome_prices[0]
 
+        question = _sanitize_text(market.question, _MAX_QUESTION_LEN)
         prompt = (
-            f"You are a prediction market analyst. Estimate the probability (0.0 to 1.0) "
-            f"that the following question resolves to Yes.\n\n"
-            f"Question: {market.question}\n"
+            "You are a prediction market analyst. Estimate the probability (0.0 to 1.0) "
+            "that the following question resolves to Yes.\n\n"
+            "--- BEGIN MARKET DATA ---\n"
+            f"Question: {question}\n"
         )
         if market.description:
-            prompt += f"Description: {market.description}\n"
+            description = _sanitize_text(market.description, _MAX_DESCRIPTION_LEN)
+            prompt += f"Description: {description}\n"
         prompt += (
+            "--- END MARKET DATA ---\n"
             f"\nCurrent market price: {yes_price:.2f}\n"
-            f"Respond with ONLY a single decimal number between 0.0 and 1.0."
+            "Respond with ONLY a single decimal number between 0.0 and 1.0."
         )
 
         try:

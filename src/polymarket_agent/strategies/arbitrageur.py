@@ -51,6 +51,9 @@ class Arbitrageur(Strategy):
         if deviation <= self._price_sum_tolerance:
             return None
 
+        if deviation < self._min_deviation:
+            return None
+
         if price_sum < 1.0:
             idx = market.outcome_prices.index(min(market.outcome_prices))
             side: Literal["buy", "sell"] = "buy"

@@ -9,7 +9,6 @@ from polymarket_agent.strategies.base import Signal, Strategy
 logger = logging.getLogger(__name__)
 
 _DEFAULT_SPREAD: float = 0.05
-_DEFAULT_MAX_INVENTORY: float = 500.0
 _DEFAULT_MIN_LIQUIDITY: float = 1000.0
 _DEFAULT_ORDER_SIZE: float = 50.0
 
@@ -29,13 +28,11 @@ class MarketMaker(Strategy):
 
     def __init__(self) -> None:
         self._spread: float = _DEFAULT_SPREAD
-        self._max_inventory: float = _DEFAULT_MAX_INVENTORY
         self._min_liquidity: float = _DEFAULT_MIN_LIQUIDITY
         self._order_size: float = _DEFAULT_ORDER_SIZE
 
     def configure(self, config: dict[str, Any]) -> None:
         self._spread = float(config.get("spread", _DEFAULT_SPREAD))
-        self._max_inventory = float(config.get("max_inventory", _DEFAULT_MAX_INVENTORY))
         self._min_liquidity = float(config.get("min_liquidity", _DEFAULT_MIN_LIQUIDITY))
         self._order_size = float(config.get("order_size", _DEFAULT_ORDER_SIZE))
 

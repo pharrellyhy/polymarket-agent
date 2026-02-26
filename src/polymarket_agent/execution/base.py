@@ -51,3 +51,11 @@ class Executor(ABC):
     @abstractmethod
     def get_portfolio(self) -> Portfolio:
         """Return the current portfolio state."""
+
+    def cancel_order(self, order_id: str) -> bool:
+        """Cancel an open order. Returns True if cancelled, False otherwise."""
+        return False
+
+    def get_open_orders(self) -> list[dict[str, Any]]:
+        """Return currently open (unfilled) orders."""
+        return []

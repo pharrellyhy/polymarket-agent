@@ -106,13 +106,19 @@ class PolymarketData:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _run_cli(self, args: list[str]) -> str:
+    def _run_cli(self, args: list[str], *, timeout: float = 30.0) -> str:
         """Execute a ``polymarket`` CLI command and return its stdout.
 
         Raises :class:`RuntimeError` when the process exits with a
-        non-zero return code.
+        non-zero return code or times out.
         """
-        result = subprocess.run(args, capture_output=True, text=True, check=False)  # noqa: S603
+        try:
+            result = subprocess.run(  # noqa: S603
+                args, capture_output=True, text=True, check=False, timeout=timeout
+            )
+        except subprocess.TimeoutExpired as exc:
+            msg = f"polymarket CLI timed out after {timeout}s: {' '.join(args)}"
+            raise RuntimeError(msg) from exc
         if result.returncode != 0:
             msg = f"polymarket CLI failed (rc={result.returncode}): {result.stderr}"
             raise RuntimeError(msg)

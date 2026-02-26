@@ -11,6 +11,9 @@ dependencies = [
     "typer>=0.9",
 ]
 
+[project.optional-dependencies]
+live = ["py-clob-client>=0.0.1"]
+
 [project.scripts]
 polymarket-agent = "polymarket_agent.cli:app"
 

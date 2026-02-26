@@ -37,7 +37,10 @@ async def _app_lifespan(_server: FastMCP) -> AsyncIterator[AppContext]:
     """Initialize orchestrator and data client on startup."""
     cfg = load_config(_config_path) if _config_path.exists() else AppConfig()
     orch = Orchestrator(config=cfg, db_path=_db_path)
-    yield AppContext(orchestrator=orch, data=orch.data, config=cfg)
+    try:
+        yield AppContext(orchestrator=orch, data=orch.data, config=cfg)
+    finally:
+        orch.close()
 
 
 mcp = FastMCP("polymarket-agent", lifespan=_app_lifespan)

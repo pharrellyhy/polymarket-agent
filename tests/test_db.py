@@ -41,3 +41,18 @@ def test_get_trades_by_strategy(db):
     trades = db.get_trades(strategy="alpha")
     assert len(trades) == 1
     assert trades[0]["strategy"] == "alpha"
+
+
+def test_db_context_manager():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        with Database(Path(tmpdir) / "test.db") as db:
+            db.record_trade(
+                Trade(strategy="ctx", market_id="1", token_id="t1", side="buy", price=0.5, size=10, reason="ctx test")
+            )
+            assert len(db.get_trades()) == 1
+        # After context manager exits, connection should be closed
+        try:
+            db.get_trades()
+            assert False, "Expected error after context manager exit"
+        except Exception:
+            pass

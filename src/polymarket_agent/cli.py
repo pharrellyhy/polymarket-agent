@@ -29,10 +29,17 @@ def _build_orchestrator(config_path: Path, db_path: Path) -> tuple[AppConfig, Or
 def run(
     config: ConfigOption = DEFAULT_CONFIG,
     db: DbOption = DEFAULT_DB,
+    live: Annotated[bool, typer.Option("--live", help="Required confirmation flag for live trading mode")] = False,
 ) -> None:
     """Run the continuous trading loop."""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    cfg, orch = _build_orchestrator(config, db)
+    cfg = load_config(config) if config.exists() else AppConfig()
+
+    if cfg.mode == "live" and not live:
+        typer.echo("Live trading requires the --live flag: polymarket-agent run --live")
+        raise typer.Exit(code=1)
+
+    orch = Orchestrator(config=cfg, db_path=db)
     typer.echo(f"Starting polymarket-agent in {cfg.mode} mode (poll every {cfg.poll_interval}s)")
     try:
         while True:
@@ -47,6 +54,8 @@ def run(
             time.sleep(cfg.poll_interval)
     except KeyboardInterrupt:
         typer.echo("\nStopped.")
+    finally:
+        orch.close()
 
 
 @app.command()
@@ -56,29 +65,41 @@ def status(
 ) -> None:
     """Show current portfolio and recent trades."""
     cfg, orch = _build_orchestrator(config, db)
-    portfolio = orch.get_portfolio()
-    typer.echo(f"Mode: {cfg.mode}")
-    typer.echo(f"Balance: ${portfolio.balance:.2f}")
-    typer.echo(f"Total Value: ${portfolio.total_value:.2f}")
-    typer.echo(f"Positions: {len(portfolio.positions)}")
+    try:
+        portfolio = orch.get_portfolio()
+        typer.echo(f"Mode: {cfg.mode}")
+        typer.echo(f"Balance: ${portfolio.balance:.2f}")
+        typer.echo(f"Total Value: ${portfolio.total_value:.2f}")
+        typer.echo(f"Positions: {len(portfolio.positions)}")
+    finally:
+        orch.close()
 
 
 @app.command()
 def tick(
     config: ConfigOption = DEFAULT_CONFIG,
     db: DbOption = DEFAULT_DB,
+    live: Annotated[bool, typer.Option("--live", help="Required confirmation flag for live trading mode")] = False,
 ) -> None:
     """Run a single tick of the trading loop."""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    _cfg, orch = _build_orchestrator(config, db)
-    result = orch.tick()
-    portfolio = orch.get_portfolio()
-    typer.echo(
-        f"Markets: {result['markets_fetched']}, "
-        f"Signals: {result['signals_generated']}, "
-        f"Trades: {result['trades_executed']}"
-    )
-    typer.echo(f"Portfolio: ${portfolio.balance:.2f} cash, ${portfolio.total_value:.2f} total")
+    cfg = load_config(config) if config.exists() else AppConfig()
+    if cfg.mode == "live" and not live:
+        typer.echo("Live trading requires the --live flag: polymarket-agent tick --live")
+        raise typer.Exit(code=1)
+
+    orch = Orchestrator(config=cfg, db_path=db)
+    try:
+        result = orch.tick()
+        portfolio = orch.get_portfolio()
+        typer.echo(
+            f"Markets: {result['markets_fetched']}, "
+            f"Signals: {result['signals_generated']}, "
+            f"Trades: {result['trades_executed']}"
+        )
+        typer.echo(f"Portfolio: ${portfolio.balance:.2f} cash, ${portfolio.total_value:.2f} total")
+    finally:
+        orch.close()
 
 
 @app.command()

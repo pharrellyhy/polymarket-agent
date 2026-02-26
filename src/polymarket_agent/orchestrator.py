@@ -1,6 +1,7 @@
 """Orchestrator — main loop coordinating data, strategies, and execution."""
 
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -8,7 +9,7 @@ from typing import Any
 from polymarket_agent.config import AppConfig
 from polymarket_agent.data.client import PolymarketData
 from polymarket_agent.db import Database
-from polymarket_agent.execution.base import Order, Portfolio
+from polymarket_agent.execution.base import Executor, Order, Portfolio
 from polymarket_agent.execution.paper import PaperTrader
 from polymarket_agent.strategies.aggregator import aggregate_signals
 from polymarket_agent.strategies.ai_analyst import AIAnalyst
@@ -27,6 +28,14 @@ STRATEGY_REGISTRY: dict[str, type[Strategy]] = {
 }
 
 
+@dataclass
+class _RiskSnapshot:
+    """Precomputed risk inputs reused across a single tick execution."""
+
+    daily_loss: float
+    open_orders: int
+
+
 class Orchestrator:
     """Coordinate the data-strategy-execution pipeline.
 
@@ -39,7 +48,7 @@ class Orchestrator:
         self._config = config
         self._data = PolymarketData()
         self._db = Database(db_path)
-        self._executor = PaperTrader(starting_balance=config.starting_balance, db=self._db)
+        self._executor = self._build_executor(config, self._db)
         self._strategies = self._load_strategies(config.strategies)
         self._last_signals: list[Signal] = []
         self._last_signals_updated_at: datetime | None = None
@@ -72,7 +81,12 @@ class Orchestrator:
 
         trades_executed = 0
         if self._config.mode != "monitor":
-            trades_executed = sum(1 for s in signals if self._executor.place_order(s) is not None)
+            risk_snapshot = self._build_risk_snapshot()
+            for signal in signals:
+                if self.place_order(signal, risk_snapshot=risk_snapshot) is None:
+                    continue
+                trades_executed += 1
+                self._update_risk_snapshot_after_order(risk_snapshot, signal)
         logger.info("Executed %d trades (mode=%s)", trades_executed, self._config.mode)
 
         return {
@@ -99,8 +113,15 @@ class Orchestrator:
         """Return the list of active strategy instances."""
         return self._strategies
 
-    def place_order(self, signal: Signal) -> Order | None:
-        """Place an order through the executor. Returns None if unfilled."""
+    def place_order(self, signal: Signal, *, risk_snapshot: _RiskSnapshot | None = None) -> Order | None:
+        """Place an order through the executor after mode/risk checks."""
+        if self._config.mode == "monitor":
+            logger.info("Monitor mode: skipping order for market %s", signal.market_id)
+            return None
+        rejection = self._check_risk(signal, risk_snapshot=risk_snapshot)
+        if rejection:
+            logger.info("Risk gate rejected signal: %s", rejection)
+            return None
         return self._executor.place_order(signal)
 
     def generate_signals(self) -> list[Signal]:
@@ -128,9 +149,74 @@ class Orchestrator:
         """Return when cached signals were last refreshed."""
         return self._last_signals_updated_at
 
+    def close(self) -> None:
+        """Release resources (database connection)."""
+        self._db.close()
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _build_executor(config: AppConfig, db: Database) -> Executor:
+        """Instantiate the right executor for the configured mode."""
+        if config.mode == "live":
+            from polymarket_agent.execution.live import LiveTrader  # noqa: PLC0415
+
+            return LiveTrader.from_env(db=db)
+        return PaperTrader(starting_balance=config.starting_balance, db=db)
+
+    def _build_risk_snapshot(self) -> _RiskSnapshot:
+        """Collect current risk inputs once for reuse across a tick."""
+        return _RiskSnapshot(
+            daily_loss=self._calculate_daily_loss(),
+            open_orders=len(self._executor.get_open_orders()),
+        )
+
+    def _update_risk_snapshot_after_order(self, snapshot: _RiskSnapshot, signal: Signal) -> None:
+        """Advance a reused risk snapshot after an accepted order."""
+        if signal.side == "buy":
+            snapshot.daily_loss += signal.size
+        else:
+            snapshot.daily_loss = max(snapshot.daily_loss - signal.size, 0.0)
+
+        # Live GTC orders may remain open; paper orders fill immediately and report no open orders.
+        if self._config.mode == "live":
+            snapshot.open_orders += 1
+
+    def _check_risk(self, signal: Signal, *, risk_snapshot: _RiskSnapshot | None = None) -> str | None:
+        """Return a rejection reason if the signal violates risk limits, else None."""
+        risk = self._config.risk
+
+        if signal.size > risk.max_position_size:
+            return f"size {signal.size} exceeds max_position_size {risk.max_position_size}"
+
+        snapshot = risk_snapshot if risk_snapshot is not None else self._build_risk_snapshot()
+        daily_loss = snapshot.daily_loss
+        if daily_loss >= risk.max_daily_loss:
+            return f"daily_loss {daily_loss:.2f} >= max_daily_loss {risk.max_daily_loss}"
+
+        open_count = snapshot.open_orders
+        if open_count >= risk.max_open_orders:
+            return f"open_orders {open_count} >= max_open_orders {risk.max_open_orders}"
+
+        return None
+
+    def _calculate_daily_loss(self) -> float:
+        """Sum of losses from today's trades (UTC)."""
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        trades = self._db.get_trades()
+        loss = 0.0
+        for t in trades:
+            ts = str(t.get("timestamp", ""))
+            if not ts.startswith(today):
+                continue
+            size = float(str(t.get("size", 0)))
+            if t.get("side") == "buy":
+                loss += size
+            else:
+                loss -= size
+        return max(loss, 0.0)
 
     def _cache_signals(self, signals: list[Signal]) -> None:
         """Store the latest aggregated signal snapshot for read-only consumers."""

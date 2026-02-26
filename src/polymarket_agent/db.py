@@ -65,3 +65,9 @@ class Database:
     def close(self) -> None:
         """Close the database connection."""
         self._conn.close()
+
+    def __enter__(self) -> "Database":
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        self.close()

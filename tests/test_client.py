@@ -127,3 +127,14 @@ def test_cli_error_raises(mocker):
     client = PolymarketData()
     with pytest.raises(RuntimeError, match="polymarket CLI failed"):
         client.get_active_markets()
+
+
+def test_cli_timeout_raises(mocker):
+    """_run_cli raises RuntimeError on subprocess timeout."""
+    mocker.patch(
+        "polymarket_agent.data.client.subprocess.run",
+        side_effect=subprocess.TimeoutExpired(cmd="polymarket", timeout=30),
+    )
+    client = PolymarketData()
+    with pytest.raises(RuntimeError, match="timed out"):
+        client.get_active_markets()

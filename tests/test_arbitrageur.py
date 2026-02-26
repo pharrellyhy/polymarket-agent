@@ -60,8 +60,19 @@ def test_arbitrageur_skips_inactive() -> None:
 
 def test_arbitrageur_configures_tolerance() -> None:
     strategy = Arbitrageur()
-    strategy.configure({"price_sum_tolerance": 0.05})
+    strategy.configure({"price_sum_tolerance": 0.05, "min_deviation": 0.04})
     assert strategy._price_sum_tolerance == 0.05
+    assert strategy._min_deviation == 0.04
+
+
+def test_arbitrageur_respects_min_deviation() -> None:
+    """Deviation above tolerance but below min_deviation should be filtered."""
+    strategy = Arbitrageur()
+    # tolerance=0.02, min_deviation=0.06: deviation of 0.05 passes tolerance but not min_deviation
+    strategy.configure({"price_sum_tolerance": 0.02, "min_deviation": 0.06})
+    market = _make_market("1", yes_price=0.60, no_price=0.35)  # sum=0.95, dev=0.05
+    signals = strategy.analyze([market], MagicMock())
+    assert signals == []
 
 
 def test_arbitrageur_skips_signal_when_token_id_missing() -> None:
