@@ -1,7 +1,5 @@
 """MarketMaker strategy — provides liquidity by quoting around the midpoint."""
 
-from __future__ import annotations
-
 import logging
 from typing import Any, Literal
 

@@ -1,7 +1,5 @@
 """Signal aggregation — deduplication, filtering, and consensus."""
 
-from __future__ import annotations
-
 from polymarket_agent.strategies.base import Signal
 
 

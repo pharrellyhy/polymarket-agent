@@ -1,7 +1,5 @@
 """Pydantic data models for Polymarket CLI JSON output."""
 
-from __future__ import annotations
-
 import json
 from typing import Any
 
@@ -49,7 +47,7 @@ class Market(BaseModel):
     group_item_title: str = ""
 
     @classmethod
-    def from_cli(cls, data: dict[str, Any]) -> Market:
+    def from_cli(cls, data: dict[str, Any]) -> "Market":
         """Parse a market dict from the polymarket CLI JSON output."""
         return cls(
             id=str(data["id"]),
@@ -88,7 +86,7 @@ class Event(BaseModel):
     markets: list[Market] = Field(default_factory=list)
 
     @classmethod
-    def from_cli(cls, data: dict[str, Any]) -> Event:
+    def from_cli(cls, data: dict[str, Any]) -> "Event":
         """Parse an event dict from the polymarket CLI JSON output."""
         return cls(
             id=str(data["id"]),
@@ -114,7 +112,7 @@ class Price(BaseModel):
     price: float
 
     @classmethod
-    def from_cli(cls, data: dict[str, Any]) -> Price:
+    def from_cli(cls, data: dict[str, Any]) -> "Price":
         """Parse a price dict from the polymarket CLI JSON output."""
         return cls(
             outcome=data["outcome"],
@@ -129,7 +127,7 @@ class PricePoint(BaseModel):
     price: float
 
     @classmethod
-    def from_cli(cls, data: dict[str, Any]) -> PricePoint:
+    def from_cli(cls, data: dict[str, Any]) -> "PricePoint":
         """Parse a price-point dict from the polymarket CLI JSON output."""
         return cls(
             timestamp=data["timestamp"],
@@ -144,7 +142,7 @@ class OrderBookLevel(BaseModel):
     size: float
 
     @classmethod
-    def from_cli(cls, data: dict[str, Any]) -> OrderBookLevel:
+    def from_cli(cls, data: dict[str, Any]) -> "OrderBookLevel":
         """Parse an order-book level dict from the polymarket CLI JSON output."""
         return cls(
             price=float(data["price"]),
@@ -159,7 +157,7 @@ class OrderBook(BaseModel):
     bids: list[OrderBookLevel]
 
     @classmethod
-    def from_cli(cls, data: dict[str, Any]) -> OrderBook:
+    def from_cli(cls, data: dict[str, Any]) -> "OrderBook":
         """Parse an order-book dict from the polymarket CLI JSON output."""
         asks = [OrderBookLevel.from_cli(a) for a in data.get("asks", [])]
         bids = [OrderBookLevel.from_cli(b) for b in data.get("bids", [])]

@@ -4,8 +4,6 @@ Wraps the ``polymarket`` CLI tool, parsing JSON output into typed Pydantic
 models and caching results with a configurable TTL.
 """
 
-from __future__ import annotations
-
 import json
 import subprocess
 from typing import Any

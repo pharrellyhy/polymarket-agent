@@ -1,7 +1,5 @@
 """SignalTrader strategy — volume-filtered directional signals."""
 
-from __future__ import annotations
-
 from typing import Any, Literal
 
 from polymarket_agent.data.models import Market

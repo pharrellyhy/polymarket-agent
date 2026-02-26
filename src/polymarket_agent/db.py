@@ -1,7 +1,5 @@
 """SQLite database for trade logging and portfolio state."""
 
-from __future__ import annotations
-
 import sqlite3
 from dataclasses import astuple, dataclass
 from pathlib import Path

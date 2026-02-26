@@ -1,7 +1,5 @@
 """AIAnalyst strategy — uses Claude to estimate market probabilities."""
 
-from __future__ import annotations
-
 import logging
 import os
 import re
