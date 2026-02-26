@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, Callable, Literal, TypeVar, cast
 
 from mcp.server.fastmcp import FastMCP
 
@@ -17,6 +17,7 @@ from polymarket_agent.orchestrator import Orchestrator
 from polymarket_agent.strategies.base import Signal
 
 logger = logging.getLogger(__name__)
+T = TypeVar("T")
 
 # Module-level config paths — override via configure() before calling mcp.run().
 _config_path: Path = Path("config.yaml")
@@ -114,6 +115,14 @@ def _signals_snapshot(
     }
 
 
+def _runtime_safe_tool(call: Callable[[], T], *, error_result: T) -> T:
+    """Execute a tool payload builder and return a fallback on CLI RuntimeError."""
+    try:
+        return call()
+    except RuntimeError:
+        return error_result
+
+
 # ------------------------------------------------------------------
 # Read-only data tools
 # ------------------------------------------------------------------
@@ -191,6 +200,106 @@ def get_price_history(token_id: str, interval: str = "1d") -> list[dict[str, Any
     ctx = _get_ctx()
     points = ctx.data.get_price_history(token_id, interval=interval)
     return [{"timestamp": p.timestamp, "price": p.price} for p in points]
+
+
+@mcp.tool()
+def get_event(event_id: str) -> dict[str, Any]:
+    """Get details for a specific event by ID or slug.
+
+    Returns event metadata including title, description, volume, and nested markets.
+    """
+    ctx = _get_ctx()
+
+    def _build_payload() -> dict[str, Any]:
+        event = ctx.data.get_event(event_id)
+        if event is None:
+            return {"error": f"Event {event_id} not found"}
+        return {
+            "id": event.id,
+            "title": event.title,
+            "description": event.description,
+            "active": event.active,
+            "closed": event.closed,
+            "volume": event.volume,
+            "volume_24h": event.volume_24h,
+            "liquidity": event.liquidity,
+            "start_date": event.start_date,
+            "end_date": event.end_date,
+            "markets": [
+                {"id": m.id, "question": m.question, "outcome_prices": m.outcome_prices}
+                for m in event.markets
+            ],
+        }
+
+    return _runtime_safe_tool(_build_payload, error_result={"error": f"Failed to fetch event {event_id}"})
+
+
+@mcp.tool()
+def get_price(token_id: str) -> dict[str, Any]:
+    """Get current bid/ask/spread for a CLOB token from the order book.
+
+    Derives bid and ask from the live order book. Use a token_id from
+    get_market_detail's clob_token_ids field.
+    """
+    ctx = _get_ctx()
+    return _runtime_safe_tool(
+        lambda: {
+            "token_id": (spread := ctx.data.get_price(token_id)).token_id,
+            "bid": spread.bid,
+            "ask": spread.ask,
+            "spread": spread.spread,
+        },
+        error_result={"error": f"Failed to fetch price for token {token_id}"},
+    )
+
+
+@mcp.tool()
+def get_spread(token_id: str) -> dict[str, Any]:
+    """Get the bid-ask spread for a CLOB token.
+
+    Uses the CLOB spread endpoint. Returns the spread value.
+    """
+    ctx = _get_ctx()
+    return _runtime_safe_tool(
+        lambda: {"token_id": (spread := ctx.data.get_spread(token_id)).token_id, "spread": spread.spread},
+        error_result={"error": f"Failed to fetch spread for token {token_id}"},
+    )
+
+
+@mcp.tool()
+def get_volume(event_id: str) -> dict[str, Any]:
+    """Get aggregated trading volume for an event.
+
+    Returns total volume across all markets in the event.
+    """
+    ctx = _get_ctx()
+    return _runtime_safe_tool(
+        lambda: {"event_id": (volume := ctx.data.get_volume(event_id)).event_id, "total": volume.total},
+        error_result={"error": f"Failed to fetch volume for event {event_id}"},
+    )
+
+
+@mcp.tool()
+def get_positions(address: str, limit: int = 25) -> list[dict[str, Any]]:
+    """Get open positions for a wallet address.
+
+    Returns a list of positions with market, outcome, shares, and P&L data.
+    """
+    ctx = _get_ctx()
+    return _runtime_safe_tool(
+        lambda: [
+            {
+                "market": p.market,
+                "outcome": p.outcome,
+                "shares": p.shares,
+                "avg_price": p.avg_price,
+                "current_price": p.current_price,
+                "pnl": p.pnl,
+            }
+            for p in ctx.data.get_positions(address, limit=limit)
+        ],
+        error_result=[{"error": f"Failed to fetch positions for {address}"}],
+    )
 
 
 @mcp.tool()

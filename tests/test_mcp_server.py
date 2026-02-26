@@ -11,16 +11,31 @@ from unittest.mock import MagicMock, patch
 
 from polymarket_agent.config import AppConfig
 from polymarket_agent.data.client import PolymarketData
-from polymarket_agent.data.models import Market, OrderBook, OrderBookLevel, PricePoint, Trader
+from polymarket_agent.data.models import (
+    Event,
+    Market,
+    OrderBook,
+    OrderBookLevel,
+    Position,
+    PricePoint,
+    Spread,
+    Trader,
+    Volume,
+)
 from polymarket_agent.execution.base import Order, Portfolio
 from polymarket_agent.mcp_server import (
     AppContext,
     analyze_market,
+    get_event,
     get_leaderboard,
     get_market_detail,
     get_portfolio,
+    get_positions,
+    get_price,
     get_price_history,
     get_signals,
+    get_spread,
+    get_volume,
     place_trade,
     refresh_signals,
     search_markets,
@@ -407,3 +422,148 @@ class TestAnalyzeMarket:
             result = analyze_market("100")
         assert result["signal"]["strategy"] == "ai_analyst"
         assert result["signal"]["confidence"] == 0.7
+
+
+# ------------------------------------------------------------------
+# get_event
+# ------------------------------------------------------------------
+
+
+class TestGetEvent:
+    def test_returns_event(self) -> None:
+        ctx = _make_ctx()
+        ctx.data.get_event.return_value = Event(
+            id="500",
+            title="Test Event",
+            description="An event",
+            active=True,
+            closed=False,
+            volume=100000,
+            volume_24h=5000,
+            liquidity=20000,
+        )
+        with _patch_ctx(ctx):
+            result = get_event("500")
+        assert result["id"] == "500"
+        assert result["title"] == "Test Event"
+        assert result["volume"] == 100000
+        ctx.data.get_event.assert_called_once_with("500")
+
+    def test_not_found(self) -> None:
+        ctx = _make_ctx()
+        ctx.data.get_event.return_value = None
+        with _patch_ctx(ctx):
+            result = get_event("999")
+        assert "error" in result
+
+    def test_error_handled(self) -> None:
+        ctx = _make_ctx()
+        ctx.data.get_event.side_effect = RuntimeError("CLI failed")
+        with _patch_ctx(ctx):
+            result = get_event("bad_event")
+        assert "error" in result
+
+
+# ------------------------------------------------------------------
+# get_price
+# ------------------------------------------------------------------
+
+
+class TestGetPrice:
+    def test_returns_bid_ask_spread(self) -> None:
+        ctx = _make_ctx()
+        ctx.data.get_price.return_value = Spread(token_id="0xtok1", bid=0.55, ask=0.65, spread=0.10)
+        with _patch_ctx(ctx):
+            result = get_price("0xtok1")
+        assert result["bid"] == 0.55
+        assert result["ask"] == 0.65
+        assert result["spread"] == 0.10
+        ctx.data.get_price.assert_called_once_with("0xtok1")
+
+    def test_error_handled(self) -> None:
+        ctx = _make_ctx()
+        ctx.data.get_price.side_effect = RuntimeError("CLI failed")
+        with _patch_ctx(ctx):
+            result = get_price("bad_token")
+        assert "error" in result
+
+
+# ------------------------------------------------------------------
+# get_spread
+# ------------------------------------------------------------------
+
+
+class TestGetSpread:
+    def test_returns_spread(self) -> None:
+        ctx = _make_ctx()
+        ctx.data.get_spread.return_value = Spread(token_id="0xtok1", spread=0.05)
+        with _patch_ctx(ctx):
+            result = get_spread("0xtok1")
+        assert result["spread"] == 0.05
+        ctx.data.get_spread.assert_called_once_with("0xtok1")
+
+    def test_error_handled(self) -> None:
+        ctx = _make_ctx()
+        ctx.data.get_spread.side_effect = RuntimeError("CLI failed")
+        with _patch_ctx(ctx):
+            result = get_spread("bad_token")
+        assert "error" in result
+
+
+# ------------------------------------------------------------------
+# get_volume
+# ------------------------------------------------------------------
+
+
+class TestGetVolume:
+    def test_returns_volume(self) -> None:
+        ctx = _make_ctx()
+        ctx.data.get_volume.return_value = Volume(event_id="500", total=100000.0)
+        with _patch_ctx(ctx):
+            result = get_volume("500")
+        assert result["event_id"] == "500"
+        assert result["total"] == 100000.0
+        ctx.data.get_volume.assert_called_once_with("500")
+
+    def test_error_handled(self) -> None:
+        ctx = _make_ctx()
+        ctx.data.get_volume.side_effect = RuntimeError("CLI failed")
+        with _patch_ctx(ctx):
+            result = get_volume("bad_event")
+        assert "error" in result
+
+
+# ------------------------------------------------------------------
+# get_positions
+# ------------------------------------------------------------------
+
+
+class TestGetPositions:
+    def test_returns_positions(self) -> None:
+        ctx = _make_ctx()
+        ctx.data.get_positions.return_value = [
+            Position(market="0xabc", outcome="Yes", shares=50.0, avg_price=0.4, current_price=0.6, pnl=10.0),
+            Position(market="0xdef", outcome="No", shares=100.0, avg_price=0.7, current_price=0.65, pnl=-5.0),
+        ]
+        with _patch_ctx(ctx):
+            result = get_positions("0xdeadbeef")
+        assert len(result) == 2
+        assert result[0]["market"] == "0xabc"
+        assert result[0]["shares"] == 50.0
+        assert result[1]["pnl"] == -5.0
+        ctx.data.get_positions.assert_called_once_with("0xdeadbeef", limit=25)
+
+    def test_empty_positions(self) -> None:
+        ctx = _make_ctx()
+        ctx.data.get_positions.return_value = []
+        with _patch_ctx(ctx):
+            result = get_positions("0x0000")
+        assert result == []
+
+    def test_error_handled(self) -> None:
+        ctx = _make_ctx()
+        ctx.data.get_positions.side_effect = RuntimeError("CLI failed")
+        with _patch_ctx(ctx):
+            result = get_positions("bad_addr")
+        assert len(result) == 1
+        assert "error" in result[0]

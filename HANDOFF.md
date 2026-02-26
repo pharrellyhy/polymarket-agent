@@ -4,6 +4,90 @@ Last updated: 2026-02-26
 
 ---
 
+## Session Entry — 2026-02-26 (Review Follow-Up: MCP get_event Error Handling + Wrapper Simplification)
+
+### Problem
+- Reviewed the newly added code from the top handoff entry (`Known Issues Fix + MCP Data Tools`).
+- Found an inconsistency in the new MCP wrappers: `get_event()` handled "not found" but did not handle CLI `RuntimeError`, despite the handoff claiming consistent CLI-failure handling across the new MCP tools.
+- The new MCP wrappers also repeated near-identical `try/except RuntimeError` blocks.
+
+### Solution
+- **TDD regression fix:** Added a failing MCP test for `get_event()` CLI failure handling, verified the failure, then implemented the fix.
+- **`get_event()` CLI failure handling:** `get_event()` now returns `{"error": ...}` on `RuntimeError` instead of propagating an exception.
+- **Wrapper simplification:** Added `_runtime_safe_tool(...)` helper in `mcp_server.py` and applied it to `get_event`, `get_price`, `get_spread`, `get_volume`, and `get_positions` to remove duplicated `try/except` blocks while preserving existing payload shapes.
+- **Test import cleanup:** Consolidated `tests/test_mcp_server.py` imports to satisfy Ruff after the new test addition.
+
+### Edits
+- `src/polymarket_agent/mcp_server.py` — fixed `get_event()` runtime-error handling; added `_runtime_safe_tool()` helper; simplified new MCP wrapper error handling
+- `tests/test_mcp_server.py` — added `get_event()` CLI failure regression test; consolidated import block
+- `HANDOFF.md` — added this review follow-up entry; removed oldest session entry to keep last 10 entries
+
+### NOT Changed
+- No changes to the newly added CLI/config, order book, Signal docstring, SignalTrader, or PaperTrader sell-side logic from the reviewed handoff entry.
+- MCP tool response shapes remain unchanged, except `get_event()` now returns an error payload instead of raising on CLI failure.
+
+### Verification
+```bash
+uv run python -m pytest tests/test_mcp_server.py -q   # 35 passed
+uv run ruff check src/polymarket_agent/mcp_server.py tests/test_mcp_server.py   # All checks passed
+uv run mypy src/polymarket_agent/mcp_server.py   # Success: no issues found in 1 source file
+```
+
+### Branch
+- Working branch: `main`
+
+---
+
+## Session Entry — 2026-02-26 (Known Issues Fix + MCP Data Tools)
+
+### Problem
+- 5 open known issues from code review remained unfixed.
+- 5 new data layer methods (get_event, get_price, get_spread, get_volume, get_positions) were not exposed as MCP tools.
+
+### Solution
+
+**Bug Fixes:**
+- **OrderBook.midpoint/spread edge case (#2):** `midpoint` and `spread` properties now return 0.0 when either asks or bids list is empty, preventing misleading midpoints or negative spreads.
+- **SignalTrader empty token_id (#7):** `_evaluate()` now returns `None` (skips the market) when `clob_token_ids` is missing or too short, instead of emitting a signal with `token_id=""`.
+- **Signal.size semantics (#4):** Added docstring to `Signal` dataclass clarifying that `size` is always USDC and the execution layer converts to shares internally.
+- **Config path silent fallback (#9):** Extracted `_load_config()` helper in CLI that logs a warning when the config file doesn't exist, used by `run`, `tick`, `status`, and `_build_orchestrator`.
+
+**Test Coverage:**
+- **Sell-side PaperTrader tests (#8):** Added 5 tests covering: partial sell reducing position, full sell closing position, sell with no position, sell with insufficient shares, and sell trade logging.
+- **OrderBook empty edge case tests:** 3 tests for empty asks, empty bids, and fully empty book.
+- **SignalTrader missing token_id test:** Verifies markets without `clob_token_ids` produce no signals.
+
+**MCP Data Tools:**
+- Added 5 new MCP tools: `get_event`, `get_price`, `get_spread`, `get_volume`, `get_positions`. Each is a thin wrapper delegating to `PolymarketData` with error handling for CLI failures.
+- 11 new MCP tests covering success paths, not-found/error cases, and empty results.
+
+### Edits
+- `src/polymarket_agent/data/models.py` — guarded `midpoint`/`spread` for empty books
+- `src/polymarket_agent/strategies/signal_trader.py` — skip markets with missing token IDs
+- `src/polymarket_agent/strategies/base.py` — added Signal.size docstring (USDC)
+- `src/polymarket_agent/cli.py` — extracted `_load_config()` with missing-file warning
+- `src/polymarket_agent/mcp_server.py` — added 5 new MCP tools (get_event, get_price, get_spread, get_volume, get_positions)
+- `tests/test_models.py` — 3 new OrderBook edge case tests
+- `tests/test_signal_trader.py` — 1 new missing token_id test
+- `tests/test_paper_trader.py` — 5 new sell-side tests
+- `tests/test_mcp_server.py` — 11 new tests for 5 MCP data tools
+
+### NOT Changed
+- No changes to orchestrator, strategies (except SignalTrader guard), execution layer, or database.
+- MCP `analyze_market` tool unchanged.
+
+### Verification
+```bash
+uv run pytest tests/ -v           # 141 passed
+uv run ruff check src/            # All checks passed
+uv run mypy src/                  # Success: no issues found in 21 source files
+```
+
+### Branch
+- Working branch: `main`
+
+---
+
 ## Session Entry — 2026-02-26 (Data Layer Gap-Fill Follow-Up: Parsing Fixes)
 
 ### Problem
@@ -351,100 +435,16 @@ uv run polymarket-agent --help    # Shows mcp command in CLI
 
 ---
 
-## Session Entry — 2026-02-25 (Phase 2 Complete: Integration Test + Final Verification)
-
-### Problem
-- Phase 2 Tasks 7–8 pending: integration test and final verification.
-
-### Solution
-- **Task 7 — Integration test:** End-to-end test running signal_trader + arbitrageur through the full orchestrator pipeline with mocked CLI data. Tests paper mode (verifies signals generated, trades executed, balance decreased) and monitor mode (verifies signals generated but zero trades). Uses `_pipeline()` context manager and `_STRATEGIES` constant for DRY setup.
-- **Task 8 — Final verification:** Full test suite (63 passed), ruff check (clean), mypy strict (19 source files clean), smoke test with live data (50 markets, 9 signals, 5 trades).
-- **Code review + simplification pass:** Tightened integration test assertions (paper mode balance check was always-true, monitor mode `>= 0` was trivially true). Extracted `_pipeline` context manager and `_make_analyst` helper for DRY. Added `token_id` param to aggregator test helper. Added docstrings to tests missing them.
-
-### Edits
-- `tests/test_integration.py` — **NEW** (2 integration tests with shared `_pipeline()` context manager)
-- `tests/test_ai_analyst.py` — extracted `_make_analyst` helper, added docstring to rate-limit edge case test
-- `tests/test_aggregator.py` — added `token_id` param to `_signal()` helper, added docstrings to new tests
-
-### NOT Changed
-- No source code changes in this batch (all production code was already complete from Tasks 1–6).
-- Pre-existing ruff isort issues in test_cli.py, test_client.py, test_db.py left as-is.
-
-### Verification
-```bash
-uv run pytest tests/ -v           # 63 passed
-uv run ruff check src/            # All checks passed
-uv run mypy src/                  # Success: no issues found in 19 source files
-uv run polymarket-agent tick      # 50 markets, 9 signals, 5 trades (live data)
-```
-
-### Branch
-- Working branch: `phase2/strategy-modules` (14 commits ahead of `main`)
-- Batch 3 commits:
-  - `af43ce4` test: add integration test for full multi-strategy pipeline
-  - `47d5d93` refactor: apply code review and simplification to batch 3
-
----
-
-## Session Entry — 2026-02-25 (Phase 2 Batch 2 Review Follow-Up)
-
-### Problem
-- Review of the newly added Batch 2 code found two correctness issues:
-- `aggregate_signals()` grouped by `(market_id, side)`, which merged different token IDs (for example AIAnalyst sell on Yes vs other strategy sell on No) and could deduplicate to the wrong instrument.
-- `aggregate_signals()` enforced `min_strategies` using raw signal count, so duplicate signals from one strategy could incorrectly satisfy consensus.
-- `AIAnalyst` only counted successful/parsible responses toward rate limiting, allowing repeated unparseable responses to exceed `max_calls_per_hour`.
-
-### Solution
-- Updated signal aggregation to group by `(market_id, token_id, side)` instead of `(market_id, side)`.
-- Changed consensus enforcement to count unique strategy names per group.
-- Updated `AIAnalyst` to count every attempted Claude call toward rate limiting (including parse failures/exceptions) via `finally` block.
-- Added focused regression tests for both aggregation issues and the AIAnalyst rate-limit edge case.
-
-### Edits
-- `src/polymarket_agent/strategies/aggregator.py`
-- `src/polymarket_agent/strategies/ai_analyst.py`
-- `tests/test_aggregator.py`
-- `tests/test_ai_analyst.py`
-
-### Verification
-- `uv run python -m pytest tests/test_ai_analyst.py tests/test_aggregator.py -q` (passes)
-
----
-
-## Session Entry — 2026-02-25 (Phase 2 Batch 2: AIAnalyst + Aggregation + Config)
-
-### Problem
-- Phase 2 Tasks 4–6 pending: AIAnalyst strategy, signal aggregation, and config updates for new strategies.
-
-### Solution
-- **Task 4 — AIAnalyst:** New strategy that sends market questions to Claude and parses probability estimates. If the AI estimate diverges from market price by more than `min_divergence`, emits a buy or sell signal. Rate-limited via sliding-window `_call_timestamps`. Gracefully degrades when `ANTHROPIC_API_KEY` is unset or `anthropic` package is missing. Added `anthropic` runtime dependency.
-- **Task 5 — Signal aggregation:** New `aggregate_signals()` function groups signals by `(market_id, token_id, side)`, deduplicates (keeps highest confidence per group), filters by `min_confidence`, and enforces `min_strategies` consensus (counts unique strategy names). Integrated into orchestrator `tick()` between strategy signal collection and execution.
-- **Task 6 — Config updates:** Added `AggregationConfig` (Pydantic model with `min_confidence` and `min_strategies`) to `config.py`. Updated `config.yaml` with entries for all 4 strategies and aggregation settings. Wired orchestrator to read aggregation params from config.
-- **Code review + simplification pass:** Fixed critical sell-signal semantics (sell targets Yes token, not No), tightened regex to only match [0, 1] probabilities, extracted `_mock_client` test helper, added sell/parse-failure/exception test cases.
-
-### Edits
-- `pyproject.toml` — added `anthropic` runtime dependency
-- `src/polymarket_agent/strategies/ai_analyst.py` — **NEW** (AIAnalyst strategy)
-- `src/polymarket_agent/strategies/aggregator.py` — **NEW** (signal aggregation)
-- `src/polymarket_agent/orchestrator.py` — added AIAnalyst to `STRATEGY_REGISTRY`, integrated `aggregate_signals()` into `tick()`
-- `src/polymarket_agent/config.py` — added `AggregationConfig` model
-- `config.yaml` — added market_maker, arbitrageur, ai_analyst, aggregation sections
-- `tests/test_ai_analyst.py` — **NEW** (8 tests)
-- `tests/test_aggregator.py` — **NEW** (7 tests)
-- `tests/test_config.py` — added aggregation config assertions
-
----
-
 ## Project Summary
 
 **Polymarket Agent** is a Python auto-trading pipeline for Polymarket prediction markets. It wraps the official `polymarket` CLI (v0.1.4, installed via Homebrew) into a structured system with pluggable trading strategies, paper/live execution, and MCP server integration for AI agents.
 
 ## Current State: Phase 4 COMPLETE
 
-- 120 tests passing, ruff lint clean, mypy strict clean (21 source files)
+- 141 tests passing, ruff lint clean, mypy strict clean (21 source files)
 - All 4 strategies implemented: SignalTrader, MarketMaker, Arbitrageur, AIAnalyst
 - Signal aggregation integrated (groups by market+token+side, unique strategy consensus)
-- MCP server with 9 tools: search_markets, get_market_detail, get_price_history, get_leaderboard, get_portfolio, get_signals, refresh_signals, place_trade, analyze_market
+- MCP server with 14 tools: search_markets, get_market_detail, get_price_history, get_leaderboard, get_portfolio, get_signals, refresh_signals, place_trade, analyze_market, get_event, get_price, get_spread, get_volume, get_positions
 - LiveTrader with py-clob-client for real order execution
 - Risk management: max_position_size, max_daily_loss, max_open_orders enforced in Orchestrator
 - CLI commands: `run` (with `--live` safety flag), `status`, `tick`, `mcp`
@@ -486,7 +486,7 @@ MCP Server (FastMCP, stdio) → AppContext → Orchestrator + Data + Config
 | `src/polymarket_agent/execution/base.py` | Executor ABC + Portfolio + Order + cancel_order/get_open_orders |
 | `src/polymarket_agent/execution/paper.py` | Paper trading with virtual USDC |
 | `src/polymarket_agent/execution/live.py` | Live trading via py-clob-client (optional dep) |
-| `src/polymarket_agent/mcp_server.py` | MCP server: 9 tools, lifespan context, module-level `mcp` + `configure()` |
+| `src/polymarket_agent/mcp_server.py` | MCP server: 14 tools, lifespan context, module-level `mcp` + `configure()` |
 | `config.yaml` | Default config (paper mode, $1000, 4 strategies, aggregation) |
 | `pyproject.toml` | Project config (deps incl. mcp>=1.0, ruff, mypy) |
 
@@ -507,16 +507,16 @@ MCP Server (FastMCP, stdio) → AppContext → Orchestrator + Data + Config
 
 ### Critical
 1. ~~**mypy strict fails**~~ — FIXED in Phase 2 Task 1.
-2. **OrderBook.midpoint/spread** — Returns 0.0 or negative when asks/bids empty. MarketMaker guards against it, but the model still allows it.
+2. ~~**OrderBook.midpoint/spread**~~ — FIXED. Returns 0.0 when either side is empty.
 3. ~~**Risk config not enforced**~~ — FIXED in Phase 4. `_check_risk()` enforces all 3 limits.
-4. **Signal.size semantics** — Ambiguous whether dollars or shares. (Currently: USDC dollars.)
+4. ~~**Signal.size semantics**~~ — FIXED. Docstring clarifies size is always USDC; execution layer converts to shares.
 5. ~~**Database connection never closed**~~ — FIXED in Phase 4. Context manager + `orch.close()` in CLI.
 
 ### Important
 6. ~~**No subprocess timeout**~~ — FIXED in Phase 4. `_run_cli()` has 30s timeout.
-7. **Empty token_id signals** — SignalTrader emits `""` token_id when `clob_token_ids` missing.
-8. **No sell-side test coverage** — Paper trader sell path untested.
-9. **Config path relative to CWD** — Silently falls back to defaults.
+7. ~~**Empty token_id signals**~~ — FIXED. SignalTrader now skips markets with missing token IDs.
+8. ~~**No sell-side test coverage**~~ — FIXED. 5 sell-side PaperTrader tests added.
+9. ~~**Config path relative to CWD**~~ — FIXED. CLI now logs a warning when config file not found.
 10. ~~**MarketMaker `_max_inventory` not enforced**~~ — FIXED in Phase 4. Removed dead config; position limits enforced by Orchestrator risk gate.
 11. ~~**Arbitrageur `_min_deviation` not used**~~ — FIXED in Phase 4. Now used in signal gating logic.
 12. ~~**Prompt injection surface**~~ — FIXED in Phase 4. AIAnalyst sanitizes external text (strip control chars, truncate, delimiters).
@@ -532,7 +532,7 @@ uv sync
 
 ### Run Tests
 ```bash
-uv run pytest tests/ -v                    # all 120 tests
+uv run pytest tests/ -v                    # all 141 tests
 ```
 
 ### Lint & Type Check
@@ -606,7 +606,7 @@ See `docs/plans/2026-02-26-polymarket-agent-phase3.md` for detailed plan with 6 
 
 ```bash
 # Everything should pass
-uv run pytest tests/ -v           # 120 tests passing
+uv run pytest tests/ -v           # 141 tests passing
 uv run ruff check src/            # All checks passed
 uv run mypy src/                  # Success: no issues found in 21 source files
 uv run polymarket-agent tick      # Fetches live data, paper trades

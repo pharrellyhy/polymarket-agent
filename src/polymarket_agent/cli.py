@@ -10,6 +10,8 @@ import typer
 from polymarket_agent.config import AppConfig, load_config
 from polymarket_agent.orchestrator import Orchestrator
 
+logger = logging.getLogger(__name__)
+
 app = typer.Typer(name="polymarket-agent", help="Polymarket Agent — agent-friendly auto-trading pipeline")
 
 DEFAULT_CONFIG = Path("config.yaml")
@@ -19,9 +21,17 @@ ConfigOption = Annotated[Path, typer.Option("--config", "-c", help="Path to conf
 DbOption = Annotated[Path, typer.Option("--db", help="Path to SQLite database")]
 
 
+def _load_config(config_path: Path) -> AppConfig:
+    """Load config from file, warning if the file does not exist."""
+    if config_path.exists():
+        return load_config(config_path)
+    logger.warning("Config file %s not found, using defaults", config_path)
+    return AppConfig()
+
+
 def _build_orchestrator(config_path: Path, db_path: Path) -> tuple[AppConfig, Orchestrator]:
     """Load config and create an Orchestrator."""
-    cfg = load_config(config_path) if config_path.exists() else AppConfig()
+    cfg = _load_config(config_path)
     return cfg, Orchestrator(config=cfg, db_path=db_path)
 
 
@@ -33,7 +43,7 @@ def run(
 ) -> None:
     """Run the continuous trading loop."""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    cfg = load_config(config) if config.exists() else AppConfig()
+    cfg = _load_config(config)
 
     if cfg.mode == "live" and not live:
         typer.echo("Live trading requires the --live flag: polymarket-agent run --live")
@@ -83,7 +93,7 @@ def tick(
 ) -> None:
     """Run a single tick of the trading loop."""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    cfg = load_config(config) if config.exists() else AppConfig()
+    cfg = _load_config(config)
     if cfg.mode == "live" and not live:
         typer.echo("Live trading requires the --live flag: polymarket-agent tick --live")
         raise typer.Exit(code=1)

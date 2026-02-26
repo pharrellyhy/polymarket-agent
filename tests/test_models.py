@@ -127,3 +127,30 @@ def test_event_handles_null_markets_list():
         }
     )
     assert event.markets == []
+
+
+def test_orderbook_empty_asks():
+    """OrderBook with no asks returns 0.0 for midpoint and spread."""
+    book = OrderBook.from_cli({"asks": [], "bids": [{"price": "0.50", "size": "100"}]})
+    assert book.best_ask == 0.0
+    assert book.best_bid == 0.50
+    assert book.midpoint == 0.0
+    assert book.spread == 0.0
+
+
+def test_orderbook_empty_bids():
+    """OrderBook with no bids returns 0.0 for midpoint and spread."""
+    book = OrderBook.from_cli({"asks": [{"price": "0.60", "size": "100"}], "bids": []})
+    assert book.best_ask == 0.60
+    assert book.best_bid == 0.0
+    assert book.midpoint == 0.0
+    assert book.spread == 0.0
+
+
+def test_orderbook_completely_empty():
+    """Fully empty OrderBook returns 0.0 for all derived values."""
+    book = OrderBook.from_cli({"asks": [], "bids": []})
+    assert book.best_ask == 0.0
+    assert book.best_bid == 0.0
+    assert book.midpoint == 0.0
+    assert book.spread == 0.0

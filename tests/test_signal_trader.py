@@ -60,3 +60,23 @@ def test_signal_trader_respects_thresholds() -> None:
     strategy.configure({"volume_threshold": 50000, "price_move_threshold": 0.1})
     assert strategy._volume_threshold == 50000
     assert strategy._price_move_threshold == 0.1
+
+
+def test_signal_trader_skips_market_with_no_token_ids() -> None:
+    """Markets without clob_token_ids should not emit signals."""
+    strategy = SignalTrader()
+    strategy.configure({"volume_threshold": 1000, "price_move_threshold": 0.05})
+    market = Market.from_cli(
+        {
+            "id": "50",
+            "question": "No tokens?",
+            "outcomes": '["Yes","No"]',
+            "outcomePrices": '["0.3","0.7"]',
+            "volume": "100000",
+            "volume24hr": "20000",
+            "active": True,
+            "closed": False,
+        }
+    )
+    signals = strategy.analyze([market], data=None)
+    assert len(signals) == 0

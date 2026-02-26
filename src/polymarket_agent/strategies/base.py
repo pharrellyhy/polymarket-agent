@@ -12,15 +12,19 @@ if TYPE_CHECKING:
 
 @dataclass
 class Signal:
-    """A trade signal emitted by a strategy."""
+    """A trade signal emitted by a strategy.
+
+    ``size`` is always denominated in USDC (not shares). The execution layer
+    converts to share quantity internally (``shares = size / target_price``).
+    """
 
     strategy: str
     market_id: str
     token_id: str
     side: Literal["buy", "sell"]
-    confidence: float
-    target_price: float
-    size: float
+    confidence: float  # 0-1
+    target_price: float  # desired entry price per share
+    size: float  # USDC amount to trade
     reason: str
 
 

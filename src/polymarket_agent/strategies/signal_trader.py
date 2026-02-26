@@ -57,10 +57,14 @@ class SignalTrader(Strategy):
 
         if yes_price < _MIDPOINT:
             side: Literal["buy", "sell"] = "buy"
-            token_id = market.clob_token_ids[0] if market.clob_token_ids else ""
+            if not market.clob_token_ids:
+                return None
+            token_id = market.clob_token_ids[0]
         else:
             side = "sell"
-            token_id = market.clob_token_ids[1] if len(market.clob_token_ids) > 1 else ""
+            if len(market.clob_token_ids) < 2:
+                return None
+            token_id = market.clob_token_ids[1]
 
         confidence = min(distance / _MIDPOINT, 1.0)
 

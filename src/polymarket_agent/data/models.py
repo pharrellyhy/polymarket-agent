@@ -276,10 +276,14 @@ class OrderBook(BaseModel):
 
     @property
     def midpoint(self) -> float:
-        """Midpoint between best bid and best ask."""
+        """Midpoint between best bid and best ask. Returns 0.0 if either side is empty."""
+        if not self.asks or not self.bids:
+            return 0.0
         return (self.best_ask + self.best_bid) / 2
 
     @property
     def spread(self) -> float:
-        """Spread between best ask and best bid."""
+        """Spread between best ask and best bid. Returns 0.0 if either side is empty."""
+        if not self.asks or not self.bids:
+            return 0.0
         return self.best_ask - self.best_bid
