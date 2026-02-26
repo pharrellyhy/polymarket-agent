@@ -9,7 +9,7 @@ import subprocess
 from typing import Any
 
 from polymarket_agent.data.cache import TTLCache
-from polymarket_agent.data.models import Event, Market, OrderBook, PricePoint, Trader
+from polymarket_agent.data.models import Event, Market, OrderBook, Position, PricePoint, Spread, Trader, Volume
 
 
 class PolymarketData:
@@ -77,6 +77,42 @@ class PolymarketData:
         raw = self._run_cli_cached(f"leaderboard:{period}", args)
         data: list[dict[str, Any]] = json.loads(raw)
         return [Trader.from_cli(t, rank=i + 1) for i, t in enumerate(data)]
+
+    def get_event(self, event_id: str) -> Event | None:
+        """Fetch a single event by ID or slug. Returns None if not found."""
+        args = ["polymarket", "events", "get", event_id, "-o", "json"]
+        try:
+            raw = self._run_cli_cached(f"event:{event_id}", args)
+            data: dict[str, Any] = json.loads(raw)
+            return Event.from_cli(data)
+        except (RuntimeError, json.JSONDecodeError, KeyError):
+            return None
+
+    def get_price(self, token_id: str) -> Spread:
+        """Return bid/ask/spread for a token derived from the order book."""
+        book = self.get_orderbook(token_id)
+        return Spread.from_orderbook(token_id, book)
+
+    def get_spread(self, token_id: str) -> Spread:
+        """Return the bid-ask spread for a token from the CLOB."""
+        args = ["polymarket", "clob", "spread", token_id, "-o", "json"]
+        raw = self._run_cli_cached(f"spread:{token_id}", args)
+        data: dict[str, Any] = json.loads(raw)
+        return Spread.from_cli(token_id, data)
+
+    def get_volume(self, event_id: str) -> Volume:
+        """Return aggregated volume for an event."""
+        args = ["polymarket", "data", "volume", event_id, "-o", "json"]
+        raw = self._run_cli_cached(f"volume:{event_id}", args)
+        data: list[dict[str, Any]] = json.loads(raw)
+        return Volume.from_cli(event_id, data)
+
+    def get_positions(self, address: str, *, limit: int = 25) -> list[Position]:
+        """Return open positions for a wallet address."""
+        args = ["polymarket", "data", "positions", address, "--limit", str(limit), "-o", "json"]
+        raw = self._run_cli_cached(f"positions:{address}:{limit}", args)
+        data: list[dict[str, Any]] = json.loads(raw)
+        return [Position.from_cli(p) for p in data]
 
     def get_price_history(
         self,

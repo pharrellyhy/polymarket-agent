@@ -4,6 +4,7 @@ import json
 import subprocess
 
 import pytest
+
 from polymarket_agent.data.client import PolymarketData
 
 MOCK_MARKETS_JSON = json.dumps(
@@ -24,6 +25,7 @@ MOCK_MARKETS_JSON = json.dumps(
         }
     ]
 )
+MOCK_MARKET_JSON = json.dumps(json.loads(MOCK_MARKETS_JSON)[0])
 
 MOCK_EVENTS_JSON = json.dumps(
     [
@@ -56,16 +58,76 @@ MOCK_BOOK_JSON = json.dumps(
     }
 )
 
+MOCK_EVENT_JSON = json.dumps(
+    {
+        "id": "200",
+        "title": "Weather Events",
+        "slug": "weather-events",
+        "description": "Weather prediction markets",
+        "active": True,
+        "closed": False,
+        "volume": "100000",
+        "volume24hr": "5000",
+        "liquidity": "20000",
+        "markets": [],
+    }
+)
+
+MOCK_SPREAD_JSON = json.dumps({"spread": "0.10"})
+
+MOCK_VOLUME_JSON = json.dumps(
+    [
+        {
+            "markets": [
+                {"market": "0xabc", "value": "70000"},
+                {"market": "0xdef", "value": "30000"},
+            ],
+            "total": "100000",
+        }
+    ]
+)
+
+MOCK_POSITIONS_JSON = json.dumps(
+    [
+        {
+            "market": "0xabc",
+            "outcome": "Yes",
+            "size": "50",
+            "avgPrice": "0.40",
+            "currentPrice": "0.60",
+            "pnl": "10.0",
+        },
+        {
+            "market": "0xdef",
+            "outcome": "No",
+            "size": "100",
+            "avgPrice": "0.70",
+            "currentPrice": "0.65",
+            "pnl": "-5.0",
+        },
+    ]
+)
+
 
 def _mock_run(args, **kwargs):
     cmd = " ".join(args)
     result = subprocess.CompletedProcess(args=args, returncode=0, stdout="[]", stderr="")
     if "markets list" in cmd:
         result.stdout = MOCK_MARKETS_JSON
+    elif "markets get" in cmd:
+        result.stdout = MOCK_MARKET_JSON
+    elif "events get" in cmd:
+        result.stdout = MOCK_EVENT_JSON
     elif "events list" in cmd:
         result.stdout = MOCK_EVENTS_JSON
+    elif "clob spread" in cmd:
+        result.stdout = MOCK_SPREAD_JSON
     elif "clob book" in cmd:
         result.stdout = MOCK_BOOK_JSON
+    elif "data volume" in cmd:
+        result.stdout = MOCK_VOLUME_JSON
+    elif "data positions" in cmd:
+        result.stdout = MOCK_POSITIONS_JSON
     elif "leaderboard" in cmd:
         result.stdout = MOCK_LEADERBOARD_JSON
     return result
@@ -138,3 +200,103 @@ def test_cli_timeout_raises(mocker):
     client = PolymarketData()
     with pytest.raises(RuntimeError, match="timed out"):
         client.get_active_markets()
+
+
+def test_get_event(client):
+    """get_event returns a single Event by ID."""
+    event = client.get_event("200")
+    assert event is not None
+    assert event.id == "200"
+    assert event.title == "Weather Events"
+
+
+def test_get_event_not_found(mocker):
+    """get_event returns None when event is not found."""
+
+    def _fail(args, **kwargs):
+        return subprocess.CompletedProcess(args=args, returncode=1, stdout="", stderr="not found")
+
+    mocker.patch("polymarket_agent.data.client.subprocess.run", side_effect=_fail)
+    client = PolymarketData()
+    assert client.get_event("999") is None
+
+
+def test_get_spread(client):
+    """get_spread returns Spread from clob spread CLI."""
+    spread = client.get_spread("0xtok1")
+    assert spread.token_id == "0xtok1"
+    assert spread.spread == 0.10
+
+
+def test_get_price(client):
+    """get_price returns Spread with bid/ask derived from order book."""
+    price = client.get_price("0xtok1")
+    assert price.token_id == "0xtok1"
+    assert price.bid == 0.55
+    assert price.ask == 0.65
+    assert price.spread == pytest.approx(0.10)
+
+
+def test_get_volume(client):
+    """get_volume returns total volume for an event."""
+    volume = client.get_volume("200")
+    assert volume.event_id == "200"
+    assert volume.total == 100000.0
+
+
+def test_get_positions(client):
+    """get_positions returns Position list for an address."""
+    positions = client.get_positions("0xdeadbeef")
+    assert len(positions) == 2
+    assert positions[0].market == "0xabc"
+    assert positions[0].outcome == "Yes"
+    assert positions[0].shares == 50.0
+    assert positions[0].avg_price == 0.40
+    assert positions[0].pnl == 10.0
+    assert positions[1].market == "0xdef"
+    assert positions[1].shares == 100.0
+
+
+def test_get_positions_empty(mocker):
+    """get_positions returns empty list for address with no positions."""
+
+    def _empty(args, **kwargs):
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="[]", stderr="")
+
+    mocker.patch("polymarket_agent.data.client.subprocess.run", side_effect=_empty)
+    client = PolymarketData()
+    positions = client.get_positions("0x0000")
+    assert positions == []
+
+
+def test_get_positions_preserves_zero_values(mocker):
+    """Position.from_cli should preserve explicit 0-valued fields without fallback."""
+
+    zero_positions_json = json.dumps(
+        [
+            {
+                "market": "0xzero",
+                "outcome": "Yes",
+                "size": "0",
+                "shares": "123",  # should be ignored because size is explicitly present
+                "avgPrice": "0",
+                "avg_price": "0.42",  # should be ignored
+                "currentPrice": "0",
+                "current_price": "0.99",  # should be ignored
+                "pnl": "0",
+                "profit": "12.5",  # should be ignored
+            }
+        ]
+    )
+
+    def _zero_positions(args, **kwargs):
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout=zero_positions_json, stderr="")
+
+    mocker.patch("polymarket_agent.data.client.subprocess.run", side_effect=_zero_positions)
+    client = PolymarketData()
+    positions = client.get_positions("0xzero")
+    assert len(positions) == 1
+    assert positions[0].shares == 0.0
+    assert positions[0].avg_price == 0.0
+    assert positions[0].current_price == 0.0
+    assert positions[0].pnl == 0.0

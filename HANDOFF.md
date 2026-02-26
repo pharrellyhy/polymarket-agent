@@ -4,6 +4,82 @@ Last updated: 2026-02-26
 
 ---
 
+## Session Entry — 2026-02-26 (Data Layer Gap-Fill Follow-Up: Parsing Fixes)
+
+### Problem
+- Review of the newly added data-layer gap-fill code found a correctness bug in `Position.from_cli()`: numeric fallback parsing used `or` chains, which can treat valid `0.0` values as missing and incorrectly fall through to alternate fields.
+- Example risk: a position with explicit `pnl=0` could incorrectly read `profit` instead.
+
+### Solution
+- **Zero-safe numeric fallback helper:** Added `_float_field_first(data, *keys)` to select the first present key while preserving valid `0`/`0.0` values.
+- **Position parsing fix:** Updated `Position.from_cli()` to use explicit key-presence fallback (`size`/`shares`, `avgPrice`/`avg_price`, `currentPrice`/`current_price`, `pnl`/`profit`) without falsy-value bugs.
+- **Spread parsing improvement:** `Spread.from_cli()` now also parses `bid`/`ask` when present (supports common key variants like `bid`, `bestBid`, `best_bid`) instead of only `spread`.
+- **Regression coverage:** Added a focused client test verifying zero-valued position fields are preserved and do not fall through to alternate keys.
+- **Test helper cleanup:** Replaced the fragile string-replacement mock for `"markets get"` with a proper single-object JSON fixture in `tests/test_client.py`.
+
+### Edits
+- `src/polymarket_agent/data/models.py` — added `_float_field_first()`, fixed `Position.from_cli()` zero-value parsing, improved `Spread.from_cli()` bid/ask parsing
+- `tests/test_client.py` — added zero-value positions regression test; fixed `markets get` mock JSON fixture; minor import-order cleanup
+- `HANDOFF.md` — added this follow-up entry
+
+### NOT Changed
+- No changes to `PolymarketData` method signatures or command wiring from the gap-fill entry.
+- No full test suite rerun (focused client/data-layer verification only).
+
+### Verification
+```bash
+uv run pytest tests/test_client.py -q   # 16 passed
+uv run ruff check src/polymarket_agent/data/models.py src/polymarket_agent/data/client.py tests/test_client.py   # All checks passed
+uv run mypy src/polymarket_agent/data/models.py src/polymarket_agent/data/client.py   # Success: no issues found in 2 source files
+```
+
+### Branch
+- Working branch: `main`
+
+---
+
+## Session Entry — 2026-02-26 (Data Layer Gap-Fill: 5 Missing Methods)
+
+### Problem
+- Original design doc listed 10 `PolymarketData` methods; only 7 were implemented through Phases 1–4.
+- Missing: `get_event(event_id)`, `get_price(token_id)`, `get_spread(token_id)`, `get_volume(event_id)`, `get_positions(address)`.
+- Missing models: `Spread`, `Volume`, `Position`.
+
+### Solution
+- **3 new Pydantic models:**
+  - `Spread(token_id, bid, ask, spread)` — bid-ask spread for a CLOB token. Two constructors: `from_cli()` (parses `clob spread` JSON) and `from_orderbook()` (derives bid/ask/spread from an OrderBook).
+  - `Volume(event_id, total)` — aggregated volume for an event. `from_cli()` parses the nested `[{"markets": [...], "total": "..."}]` response.
+  - `Position(market, outcome, shares, avg_price, current_price, pnl)` — open position for a wallet. `from_cli()` handles multiple field name conventions (e.g., `size`/`shares`, `avgPrice`/`avg_price`).
+- **5 new client methods:**
+  - `get_event(event_id)` → `Event | None` via `polymarket events get <id> -o json`
+  - `get_price(token_id)` → `Spread` derived from order book (bid, ask, spread)
+  - `get_spread(token_id)` → `Spread` via `polymarket clob spread <token_id> -o json`
+  - `get_volume(event_id)` → `Volume` via `polymarket data volume <id> -o json`
+  - `get_positions(address, limit)` → `list[Position]` via `polymarket data positions <addr> -o json`
+- **7 new tests:** get_event, get_event_not_found, get_spread, get_price, get_volume, get_positions, get_positions_empty.
+
+### Edits
+- `src/polymarket_agent/data/models.py` — added `Spread`, `Volume`, `Position` models with `from_cli()` constructors
+- `src/polymarket_agent/data/client.py` — added 5 new methods, updated imports
+- `tests/test_client.py` — added mock data and 7 new test functions, extended `_mock_run` dispatcher
+
+### NOT Changed
+- No changes to strategies, execution, orchestrator, MCP server, or CLI.
+- Existing models and methods untouched.
+- MCP server does not yet expose the new methods as tools (future enhancement).
+
+### Verification
+```bash
+uv run pytest tests/ -v           # 120 passed
+uv run ruff check src/            # All checks passed
+uv run mypy src/                  # Success: no issues found in 21 source files
+```
+
+### Branch
+- Working branch: `main`
+
+---
+
 ## Session Entry — 2026-02-26 (Phase 4 Follow-Up: Risk Gate Performance Optimization)
 
 ### Problem
@@ -359,33 +435,13 @@ uv run polymarket-agent tick      # 50 markets, 9 signals, 5 trades (live data)
 
 ---
 
-## Session Entry — 2026-02-25 (Phase 2 Batch 1: mypy fixes + MarketMaker + Arbitrageur)
-
-### Problem
-- Phase 1 left 5 mypy strict-mode errors. Phase 2 plan calls for 3 new strategies, signal aggregation, and config updates.
-
-### Solution
-- **Task 1 — mypy fixes:** Added `types-PyYAML` dev dep, fixed type annotations across 4 files. Result: `mypy src/` → `Success: no issues found`.
-- **Task 2 — MarketMaker:** Bid/ask around orderbook midpoint for liquid markets. Guards one-sided books, uses `except RuntimeError`.
-- **Task 3 — Arbitrageur:** Price-sum deviation detection. Buys underpriced / sells overpriced side.
-- **Code review + simplification pass:** Narrowed exception handling, added one-sided book guard, extracted helpers.
-
-### Edits
-- `pyproject.toml`, `src/polymarket_agent/data/client.py`, `src/polymarket_agent/data/models.py`, `src/polymarket_agent/strategies/signal_trader.py`, `src/polymarket_agent/execution/base.py`
-- `src/polymarket_agent/strategies/market_maker.py` — **NEW**
-- `src/polymarket_agent/strategies/arbitrageur.py` — **NEW**
-- `src/polymarket_agent/orchestrator.py` — added to `STRATEGY_REGISTRY`
-- `tests/test_market_maker.py` — **NEW** (5 tests), `tests/test_arbitrageur.py` — **NEW** (5 tests)
-
----
-
 ## Project Summary
 
 **Polymarket Agent** is a Python auto-trading pipeline for Polymarket prediction markets. It wraps the official `polymarket` CLI (v0.1.4, installed via Homebrew) into a structured system with pluggable trading strategies, paper/live execution, and MCP server integration for AI agents.
 
 ## Current State: Phase 4 COMPLETE
 
-- 109 tests passing, ruff lint clean, mypy strict clean (21 source files)
+- 120 tests passing, ruff lint clean, mypy strict clean (21 source files)
 - All 4 strategies implemented: SignalTrader, MarketMaker, Arbitrageur, AIAnalyst
 - Signal aggregation integrated (groups by market+token+side, unique strategy consensus)
 - MCP server with 9 tools: search_markets, get_market_detail, get_price_history, get_leaderboard, get_portfolio, get_signals, refresh_signals, place_trade, analyze_market
@@ -417,8 +473,8 @@ MCP Server (FastMCP, stdio) → AppContext → Orchestrator + Data + Config
 | `src/polymarket_agent/cli.py` | Typer CLI: `run`, `status`, `tick`, `mcp` commands |
 | `src/polymarket_agent/orchestrator.py` | Main loop: fetch → analyze → aggregate → execute |
 | `src/polymarket_agent/config.py` | Pydantic config from YAML (incl. AggregationConfig) |
-| `src/polymarket_agent/data/models.py` | Market, Event, OrderBook, PricePoint, Trader (Pydantic) |
-| `src/polymarket_agent/data/client.py` | CLI wrapper with TTL caching + search_markets + get_leaderboard |
+| `src/polymarket_agent/data/models.py` | Market, Event, OrderBook, PricePoint, Trader, Spread, Volume, Position (Pydantic) |
+| `src/polymarket_agent/data/client.py` | CLI wrapper with TTL caching + 12 public methods |
 | `src/polymarket_agent/data/cache.py` | In-memory TTL cache |
 | `src/polymarket_agent/db.py` | SQLite trade logging |
 | `src/polymarket_agent/strategies/base.py` | Strategy ABC + Signal dataclass |
@@ -476,7 +532,7 @@ uv sync
 
 ### Run Tests
 ```bash
-uv run pytest tests/ -v                    # all 85 tests
+uv run pytest tests/ -v                    # all 120 tests
 ```
 
 ### Lint & Type Check
@@ -550,7 +606,7 @@ See `docs/plans/2026-02-26-polymarket-agent-phase3.md` for detailed plan with 6 
 
 ```bash
 # Everything should pass
-uv run pytest tests/ -v           # 109 tests passing
+uv run pytest tests/ -v           # 120 tests passing
 uv run ruff check src/            # All checks passed
 uv run mypy src/                  # Success: no issues found in 21 source files
 uv run polymarket-agent tick      # Fetches live data, paper trades

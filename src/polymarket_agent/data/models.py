@@ -27,6 +27,14 @@ def _float_field(data: dict[str, Any], key: str) -> float:
     return float(data.get(key) or 0)
 
 
+def _float_field_first(data: dict[str, Any], *keys: str) -> float:
+    """Extract the first present numeric field, preserving valid 0.0 values."""
+    for key in keys:
+        if key in data:
+            return float(data.get(key) or 0)
+    return 0.0
+
+
 class Market(BaseModel):
     """A single prediction market."""
 
@@ -170,6 +178,72 @@ class Trader(BaseModel):
             markets_traded=int(data["marketsTraded"])
             if "marketsTraded" in data
             else int(_float_field(data, "markets_traded")),
+        )
+
+
+class Spread(BaseModel):
+    """Bid-ask spread for a CLOB token."""
+
+    token_id: str
+    bid: float = 0.0
+    ask: float = 0.0
+    spread: float = 0.0
+
+    @classmethod
+    def from_cli(cls, token_id: str, data: dict[str, Any]) -> "Spread":
+        """Parse a spread dict from the polymarket CLI JSON output."""
+        return cls(
+            token_id=token_id,
+            bid=_float_field_first(data, "bid", "bestBid", "best_bid"),
+            ask=_float_field_first(data, "ask", "bestAsk", "best_ask"),
+            spread=float(data.get("spread", 0)),
+        )
+
+    @classmethod
+    def from_orderbook(cls, token_id: str, book: "OrderBook") -> "Spread":
+        """Derive spread from an order book."""
+        return cls(
+            token_id=token_id,
+            bid=book.best_bid,
+            ask=book.best_ask,
+            spread=book.spread,
+        )
+
+
+class Volume(BaseModel):
+    """Aggregated volume for an event."""
+
+    event_id: str
+    total: float
+
+    @classmethod
+    def from_cli(cls, event_id: str, data: list[dict[str, Any]]) -> "Volume":
+        """Parse volume data from the polymarket CLI JSON output."""
+        if data and isinstance(data, list) and len(data) > 0:
+            return cls(event_id=event_id, total=float(data[0].get("total", 0)))
+        return cls(event_id=event_id, total=0.0)
+
+
+class Position(BaseModel):
+    """An open position for a wallet address."""
+
+    market: str = ""
+    outcome: str = ""
+    shares: float = 0.0
+    avg_price: float = 0.0
+    current_price: float = 0.0
+    pnl: float = 0.0
+
+    @classmethod
+    def from_cli(cls, data: dict[str, Any]) -> "Position":
+        """Parse a position dict from the polymarket CLI JSON output."""
+        return cls(
+            market=_str_field(data, "market") or _str_field(data, "conditionId") or _str_field(data, "title"),
+            outcome=_str_field(data, "outcome") or _str_field(data, "asset"),
+            shares=_float_field_first(data, "size", "shares"),
+            avg_price=_float_field_first(data, "avgPrice", "avg_price"),
+            current_price=_float_field_first(data, "currentPrice", "current_price"),
+            pnl=_float_field_first(data, "pnl", "profit"),
         )
 
 
