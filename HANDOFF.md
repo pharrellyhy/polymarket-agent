@@ -1,6 +1,139 @@
 # Polymarket Agent — Handoff Document
 
-Last updated: 2026-02-25
+Last updated: 2026-02-26
+
+---
+
+## Session Entry — 2026-02-26 (Phase 3 MCP Follow-Up: Signal Cache Split)
+
+### Problem
+- MCP `get_signals()` was implemented as a recompute path, so repeated read-only calls could run `AIAnalyst` and consume hourly AI quota / API cost.
+
+### Solution
+- **Split signal access into read-only vs explicit recompute:**
+  1. `get_signals()` now returns the latest cached aggregated signal snapshot (no strategy execution).
+  2. `refresh_signals()` explicitly recomputes signals and returns a fresh snapshot (may consume AI quota).
+- **Cached signal snapshot in Orchestrator:** Added cached signal storage + timestamp, updated by both `tick()` and `generate_signals()`, so read-only consumers can inspect the latest computed signals safely.
+- **Snapshot metadata:** MCP signal responses now include `source`, `last_updated`, and `freshness_seconds` alongside `signals`.
+- **Tests updated:** Added coverage for cached-empty snapshots and explicit `refresh_signals()` recompute behavior.
+
+### Edits
+- `src/polymarket_agent/orchestrator.py` — added cached signal snapshot state + getters; cache updated from `tick()` and `generate_signals()`
+- `src/polymarket_agent/mcp_server.py` — changed `get_signals()` to cached read-only snapshot; added `refresh_signals()` MCP tool and snapshot serialization helpers
+- `tests/test_mcp_server.py` — updated `get_signals()` assertions and added `refresh_signals()` tests
+- `HANDOFF.md` — added this entry and updated MCP tool counts/summary wording to include `refresh_signals()`
+
+### NOT Changed
+- No changes to trading execution semantics, strategy logic, or AIAnalyst rate-limit policy itself.
+- Existing Phase 3 handoff entries remain as historical records (they describe the state before this MCP signal split).
+
+### MCP API Note
+- `get_signals()` response shape changed from `list[signal]` to a snapshot object:
+  - `{"signals": [...], "source": "cache", "last_updated": <iso8601|null>, "freshness_seconds": <float|null>}`
+- `get_signals()` is now read-only (cached snapshot only).
+- Use `refresh_signals()` when a caller explicitly wants recomputation and accepts possible AI quota/API cost.
+- MCP clients that previously iterated `get_signals()` directly as a list must be updated to read `result["signals"]`.
+
+### Verification
+```bash
+uv run pytest tests/test_mcp_server.py -q                                    # 23 passed
+uv run ruff check src/polymarket_agent/mcp_server.py src/polymarket_agent/orchestrator.py tests/test_mcp_server.py   # All checks passed
+uv run mypy src/polymarket_agent/mcp_server.py src/polymarket_agent/orchestrator.py   # Success: no issues found in 2 source files
+```
+
+### Branch
+- Working branch: `main`
+
+---
+
+## Session Entry — 2026-02-26 (Phase 3 MCP Follow-Up: Review + Simplification)
+
+### Problem
+- Requested follow-up review of the newly added Phase 3 MCP code and `HANDOFF.md` to catch remaining issues and simplify where useful.
+
+### Solution
+- **Fixed MCP manual trade validation gap:** `place_trade()` now validates `side`, `size`, and `price` before building a `Signal` or calling the executor. This prevents invalid manual MCP requests (for example `price=0`) from causing downstream runtime errors such as division by zero in `PaperTrader`.
+- **Simplified typing in `place_trade()`:** Replaced the `# type: ignore[arg-type]` with validated input + typed cast to `Literal["buy", "sell"]`.
+- **Small MCP cleanup:** Added `_yes_price()` helper to remove repeated inline price extraction in `analyze_market()`.
+- **More accurate AI availability error:** `analyze_market()` now reports AI analysis as unavailable when either `ANTHROPIC_API_KEY` is missing or the `anthropic` package is unavailable (previous message implied only the env var case).
+- **Test coverage expanded:** Added MCP tool tests for zero-price and non-positive-size manual trades (test file now 21 tests).
+- **HANDOFF cleanup:** Corrected stale `create_server()` references in the project summary/design notes to the current `configure()` + module-level `mcp` server pattern.
+
+### Edits
+- `src/polymarket_agent/mcp_server.py` — added manual trade input validation, removed `type: ignore`, improved AI unavailable error, extracted `_yes_price()` helper
+- `tests/test_mcp_server.py` — added validation tests for zero price and non-positive size
+- `HANDOFF.md` — added this entry and corrected stale MCP server factory wording in summary sections
+
+### NOT Changed
+- No changes to the data client, orchestrator, CLI wiring, or execution logic beyond rejecting invalid MCP manual trade inputs earlier.
+- `get_signals()` still runs active strategies directly and may consume `AIAnalyst` hourly quota on read-only MCP calls (behavior/design follow-up, not changed here).
+- No full-suite verification rerun (focused checks only for the touched MCP files).
+
+### Verification
+```bash
+uv run pytest tests/test_mcp_server.py -q   # 21 passed
+uv run ruff check src/polymarket_agent/mcp_server.py tests/test_mcp_server.py   # All checks passed
+```
+
+### Branch
+- Working branch: `main`
+
+---
+
+## Session Entry — 2026-02-26 (Phase 3: MCP Server + Code Review Fixes)
+
+### Problem
+- Phase 3 pending: expose Polymarket data and trading as MCP tools for AI agents.
+
+### Solution
+- **MCP Server (`mcp_server.py`):** FastMCP server with lifespan context sharing an `AppContext` (Orchestrator + PolymarketData + AppConfig) across all 9 tools. Each tool is a thin wrapper that delegates to existing data/strategy/execution layers.
+- **9 MCP tools implemented:**
+  1. `search_markets(query, limit)` — keyword search in market questions via `PolymarketData.search_markets()`
+  2. `get_market_detail(market_id)` — full market details + live orderbook
+  3. `get_price_history(token_id, interval)` — historical price data
+  4. `get_leaderboard(period)` — top traders from Polymarket leaderboard
+  5. `get_portfolio()` — current balance, positions, recent trades
+  6. `get_signals()` — returns the latest cached aggregated signal snapshot (read-only, no recompute)
+  7. `refresh_signals()` — explicitly recomputes aggregated signals and updates the cache
+  8. `place_trade(market_id, token_id, side, size, price)` — builds a Signal and delegates to executor; blocks in monitor mode
+  9. `analyze_market(market_id)` — runs AIAnalyst on a single market; gracefully handles missing API key
+- **Data layer additions:** Added `get_market()` (single market by ID), `search_markets()` (client-side filter), and `get_leaderboard()` (new CLI wrapper) to `PolymarketData`. Added `Trader` Pydantic model.
+- **CLI integration:** New `polymarket-agent mcp` command using `configure()` + module-level `mcp` instance.
+- **Dependency:** Added `mcp>=1.0` to pyproject.toml.
+
+### Code Review Fixes
+- **Bug: `create_server()` returned empty server** — Tools were registered on the module-level `mcp` instance, but `create_server()` returned a new `FastMCP` with no tools. Replaced with `configure()` setter + direct use of module-level `mcp`. CLI now calls `configure(); mcp.run()`.
+- **Private attribute access** — Added public Orchestrator methods (`data`, `strategies`, `place_order()`, `generate_signals()`) so MCP tools no longer reach into `_strategies`, `_executor`, `_data`. `generate_signals()` also includes per-strategy try/except error handling.
+- **Trader.from_cli falsy 0.0** — Fixed `or` chaining with explicit `in` checks so a trader with `pnl=0` or `marketsTraded=0` doesn't incorrectly fall through to the alternative field.
+- **Market lookup limit** — Added `get_market(market_id)` direct-fetch method and `_find_market()` DRY helper so `get_market_detail` and `analyze_market` don't silently miss markets beyond the first 100.
+- **Skipped: Orchestrator hardcodes PaperTrader** — Pre-existing issue, properly addressed in Phase 4 (Live Trading). Not introduced by Phase 3.
+- **Skipped: ANTHROPIC_API_KEY documentation** — Code already gracefully degrades with clear error messages. Out of scope per CLAUDE.md guidelines.
+
+### Edits
+- `pyproject.toml` — added `mcp>=1.0` runtime dependency
+- `src/polymarket_agent/data/models.py` — added `Trader` model, fixed `from_cli()` falsy 0.0 bug
+- `src/polymarket_agent/data/client.py` — added `get_market()`, `search_markets()`, `get_leaderboard()`
+- `src/polymarket_agent/orchestrator.py` — added public `data`, `strategies`, `place_order()`, `generate_signals()` methods
+- `src/polymarket_agent/mcp_server.py` — **NEW** (MCP server with 9 tools, `configure()`, `_find_market()` helper)
+- `src/polymarket_agent/cli.py` — added `mcp` command using `configure()` + module-level server
+- `tests/test_client.py` — added tests for `search_markets()` and `get_leaderboard()`
+- `tests/test_mcp_server.py` — **NEW** (now expanded beyond the original 19 tests; covers MCP tools including error paths)
+- `docs/plans/2026-02-26-polymarket-agent-phase3.md` — **NEW** (implementation plan)
+
+### NOT Changed
+- No modifications to existing strategies or execution layer.
+- Pre-existing ruff isort issues in test_cli.py, test_client.py, test_db.py left as-is.
+
+### Verification
+```bash
+uv run pytest tests/ -v           # 85 passed
+uv run ruff check src/            # All checks passed
+uv run mypy src/                  # Success: no issues found in 20 source files
+uv run polymarket-agent --help    # Shows mcp command in CLI
+```
+
+### Branch
+- Working branch: `main`
 
 ---
 
@@ -108,32 +241,17 @@ uv run polymarket-agent tick      # 50 markets, 9 signals, 5 trades (live data)
 
 ---
 
-## Session Entry — 2026-02-25 (Execution Regression Fixes)
-
-### Problem
-- Refactor commit `d4c715e` introduced two behavior regressions in portfolio valuation and side validation.
-
-### Solution
-- Added regression tests, restored explicit side validation, fixed zero-price handling.
-
-### Edits
-- `src/polymarket_agent/execution/base.py`, `src/polymarket_agent/execution/paper.py`, `tests/test_paper_trader.py`
-
----
-
 ## Project Summary
 
-**Polymarket Agent** is a Python auto-trading pipeline for Polymarket prediction markets. It wraps the official `polymarket` CLI (v0.1.4, installed via Homebrew) into a structured system with pluggable trading strategies, paper/live execution, and planned MCP server integration for AI agents.
+**Polymarket Agent** is a Python auto-trading pipeline for Polymarket prediction markets. It wraps the official `polymarket` CLI (v0.1.4, installed via Homebrew) into a structured system with pluggable trading strategies, paper/live execution, and MCP server integration for AI agents.
 
-## Current State: Phase 2 COMPLETE
+## Current State: Phase 3 COMPLETE
 
-- Branch: `phase2/strategy-modules` (14 commits ahead of `main`)
-- 63 tests passing, ruff lint clean, mypy strict clean (19 source files)
+- 85 tests passing, ruff lint clean, mypy strict clean (20 source files)
 - All 4 strategies implemented: SignalTrader, MarketMaker, Arbitrageur, AIAnalyst
 - Signal aggregation integrated (groups by market+token+side, unique strategy consensus)
-- Config updated for all strategies + aggregation
-- Integration test covering paper + monitor modes
-- Smoke tested with live Polymarket data
+- MCP server with 9 tools: search_markets, get_market_detail, get_price_history, get_leaderboard, get_portfolio, get_signals, refresh_signals, place_trade, analyze_market
+- CLI commands: `run`, `status`, `tick`, `mcp`
 
 ## Architecture
 
@@ -143,17 +261,23 @@ CLI (Typer) → Orchestrator → Data Layer (CLI wrapper + cache)
                            → Signal Aggregation (dedup, confidence, consensus)
                            → Execution Layer (Paper/Live)
                            → SQLite (trade logging)
+
+MCP Server (FastMCP, stdio) → AppContext → Orchestrator + Data + Config
+  ├── search_markets, get_market_detail, get_price_history, get_leaderboard
+  ├── get_portfolio, get_signals, refresh_signals
+  ├── place_trade
+  └── analyze_market
 ```
 
 ## File Map
 
 | File | Purpose |
 |------|---------|
-| `src/polymarket_agent/cli.py` | Typer CLI: `run`, `status`, `tick` commands |
+| `src/polymarket_agent/cli.py` | Typer CLI: `run`, `status`, `tick`, `mcp` commands |
 | `src/polymarket_agent/orchestrator.py` | Main loop: fetch → analyze → aggregate → execute |
 | `src/polymarket_agent/config.py` | Pydantic config from YAML (incl. AggregationConfig) |
-| `src/polymarket_agent/data/models.py` | Market, Event, OrderBook, PricePoint (Pydantic) |
-| `src/polymarket_agent/data/client.py` | CLI wrapper with TTL caching |
+| `src/polymarket_agent/data/models.py` | Market, Event, OrderBook, PricePoint, Trader (Pydantic) |
+| `src/polymarket_agent/data/client.py` | CLI wrapper with TTL caching + search_markets + get_leaderboard |
 | `src/polymarket_agent/data/cache.py` | In-memory TTL cache |
 | `src/polymarket_agent/db.py` | SQLite trade logging |
 | `src/polymarket_agent/strategies/base.py` | Strategy ABC + Signal dataclass |
@@ -164,8 +288,9 @@ CLI (Typer) → Orchestrator → Data Layer (CLI wrapper + cache)
 | `src/polymarket_agent/strategies/aggregator.py` | Signal dedup, confidence filtering, consensus |
 | `src/polymarket_agent/execution/base.py` | Executor ABC + Portfolio + Order |
 | `src/polymarket_agent/execution/paper.py` | Paper trading with virtual USDC |
+| `src/polymarket_agent/mcp_server.py` | MCP server: 9 tools, lifespan context, module-level `mcp` + `configure()` |
 | `config.yaml` | Default config (paper mode, $1000, 4 strategies, aggregation) |
-| `pyproject.toml` | Project config (deps, ruff, mypy) |
+| `pyproject.toml` | Project config (deps incl. mcp>=1.0, ruff, mypy) |
 
 ## Key Design Decisions
 
@@ -175,11 +300,12 @@ CLI (Typer) → Orchestrator → Data Layer (CLI wrapper + cache)
 4. **Executor ABC** — `place_order(signal) -> Order | None`. Paper and Live share interface.
 5. **Signal dataclass** — `strategy`, `market_id`, `token_id`, `side` (buy/sell), `confidence`, `target_price`, `size` (USDC), `reason`.
 6. **Signal aggregation** — `aggregate_signals()` groups by `(market_id, token_id, side)`, deduplicates (highest confidence wins), filters by `min_confidence`, enforces `min_strategies` consensus (unique strategy names). Runs between strategy collection and execution in `tick()`.
+7. **MCP server** — FastMCP with lifespan context. `AppContext` dataclass holds Orchestrator + PolymarketData + AppConfig. Tools are thin wrappers that delegate to existing layers. `configure()` sets config/db paths for the module-level `mcp` instance before `mcp.run()`.
 
 ## Known Issues from Code Review
 
 ### Critical
-1. ~~**mypy strict fails**~~ — FIXED in Task 1.
+1. ~~**mypy strict fails**~~ — FIXED in Phase 2 Task 1.
 2. **OrderBook.midpoint/spread** — Returns 0.0 or negative when asks/bids empty. MarketMaker guards against it, but the model still allows it.
 3. **Risk config not enforced** — `RiskConfig` loaded but never checked.
 4. **Signal.size semantics** — Ambiguous whether dollars or shares.
@@ -193,6 +319,7 @@ CLI (Typer) → Orchestrator → Data Layer (CLI wrapper + cache)
 10. **MarketMaker `_max_inventory` not enforced** — Configured but unused.
 11. **Arbitrageur `_min_deviation` not used** — Configured but unused.
 12. **Prompt injection surface** — AIAnalyst interpolates external data directly into prompt.
+13. **MCP tools access private attributes** — `get_signals` and `place_trade` access `orch._strategies` and `orch._executor` directly. Consider adding public methods to Orchestrator.
 
 ## How to Work With This Codebase
 
@@ -204,7 +331,7 @@ uv sync
 
 ### Run Tests
 ```bash
-uv run pytest tests/ -v                    # all 63 tests
+uv run pytest tests/ -v                    # all 85 tests
 ```
 
 ### Lint & Type Check
@@ -218,6 +345,7 @@ uv run mypy src/                           # type check (currently clean)
 uv run polymarket-agent tick               # single trading cycle with live data
 uv run polymarket-agent status             # portfolio view
 uv run polymarket-agent run                # continuous loop (Ctrl+C to stop)
+uv run polymarket-agent mcp                # start MCP server (stdio transport)
 ```
 
 ### Adding a New Strategy
@@ -226,31 +354,42 @@ uv run polymarket-agent run                # continuous loop (Ctrl+C to stop)
 3. Add config block in `config.yaml` under `strategies:`
 4. Write tests in `tests/test_<name>.py`
 
+### Using the MCP Server
+The MCP server runs via stdio transport. To use with Claude Code, add to your MCP config:
+```json
+{
+  "mcpServers": {
+    "polymarket": {
+      "command": "uv",
+      "args": ["run", "polymarket-agent", "mcp"]
+    }
+  }
+}
+```
+
 ## Phase Plan
 
 | Phase | Status | Description |
 |-------|--------|-------------|
 | **1: Data + Paper Trading** | COMPLETE | CLI wrapper, models, cache, paper executor, SignalTrader, orchestrator, CLI |
 | **2: Strategy Modules** | COMPLETE | MarketMaker, Arbitrageur, AIAnalyst, signal aggregation, config, integration test |
-| **3: MCP Server** | Planned | Expose tools for Claude (search_markets, place_trade, etc.) |
+| **3: MCP Server** | COMPLETE | 9 MCP tools, lifespan context, CLI integration, expanded MCP test coverage |
 | **4: Live Trading** | Planned | py-clob-client, wallet setup, real order execution |
 
-## Phase 2 Implementation Plan
+## Phase 3 Implementation Plan
 
-See `docs/plans/2026-02-25-polymarket-agent-phase2.md` for detailed TDD plan with 8 tasks:
+See `docs/plans/2026-02-26-polymarket-agent-phase3.md` for detailed plan with 6 tasks:
 
-1. ~~Fix mypy errors from Phase 1~~ DONE
-2. ~~MarketMaker strategy (bid/ask around midpoint)~~ DONE
-3. ~~Arbitrageur strategy (price-sum deviation detection)~~ DONE
-4. ~~AIAnalyst strategy (Claude probability estimates)~~ DONE
-5. ~~Signal aggregation (dedup, confidence filtering, multi-strategy consensus)~~ DONE
-6. ~~Config updates for new strategies~~ DONE
-7. ~~Integration test with all strategies~~ DONE
-8. ~~Final verification~~ DONE
+1. ~~Add mcp dependency + data layer additions~~ DONE
+2. ~~MCP server core — lifespan + read-only tools~~ DONE
+3. ~~MCP portfolio, signals, trading tools~~ DONE
+4. ~~MCP analyze_market tool~~ DONE
+5. ~~CLI integration + config~~ DONE
+6. ~~Tests + final verification~~ DONE
 
 ## Dependencies
 
-**Runtime:** pydantic>=2.0, pyyaml>=6.0, typer>=0.9, anthropic>=0.84
+**Runtime:** pydantic>=2.0, pyyaml>=6.0, typer>=0.9, anthropic>=0.84, mcp>=1.0
 **Dev:** pytest>=8.0, pytest-mock>=3.0, ruff>=0.4, mypy>=1.10, types-PyYAML
 **External:** `polymarket` CLI (Homebrew: `brew install polymarket`)
 
@@ -259,13 +398,15 @@ See `docs/plans/2026-02-25-polymarket-agent-phase2.md` for detailed TDD plan wit
 - `docs/plans/2026-02-25-polymarket-agent-trader-design.md` — Full system design (architecture, all phases)
 - `docs/plans/2026-02-25-polymarket-agent-phase1.md` — Phase 1 implementation plan (COMPLETE)
 - `docs/plans/2026-02-25-polymarket-agent-phase2.md` — Phase 2 implementation plan (COMPLETE)
+- `docs/plans/2026-02-26-polymarket-agent-phase3.md` — Phase 3 implementation plan (COMPLETE)
 
 ## Verification Commands
 
 ```bash
 # Everything should pass
-uv run pytest tests/ -v           # 63 tests passing
+uv run pytest tests/ -v           # 85 tests passing
 uv run ruff check src/            # All checks passed
-uv run mypy src/                  # Success: no issues found in 19 source files
+uv run mypy src/                  # Success: no issues found in 20 source files
 uv run polymarket-agent tick      # Fetches live data, paper trades
+uv run polymarket-agent mcp       # Starts MCP server (stdio transport)
 ```

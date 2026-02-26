@@ -79,3 +79,16 @@ def tick(
         f"Trades: {result['trades_executed']}"
     )
     typer.echo(f"Portfolio: ${portfolio.balance:.2f} cash, ${portfolio.total_value:.2f} total")
+
+
+@app.command()
+def mcp(
+    config: ConfigOption = DEFAULT_CONFIG,
+    db: DbOption = DEFAULT_DB,
+) -> None:
+    """Run the MCP server (stdio transport) for AI agent integration."""
+    from polymarket_agent.mcp_server import configure  # noqa: PLC0415
+    from polymarket_agent.mcp_server import mcp as mcp_server  # noqa: PLC0415
+
+    configure(config_path=config, db_path=db)
+    mcp_server.run()

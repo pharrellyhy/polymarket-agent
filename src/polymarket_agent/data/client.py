@@ -9,7 +9,7 @@ import subprocess
 from typing import Any
 
 from polymarket_agent.data.cache import TTLCache
-from polymarket_agent.data.models import Event, Market, OrderBook, PricePoint
+from polymarket_agent.data.models import Event, Market, OrderBook, PricePoint, Trader
 
 
 class PolymarketData:
@@ -53,6 +53,30 @@ class PolymarketData:
         raw = self._run_cli_cached(f"book:{token_id}", args)
         data: dict[str, Any] = json.loads(raw)
         return OrderBook.from_cli(data)
+
+    def get_market(self, market_id: str) -> Market | None:
+        """Fetch a single market by ID. Returns None if not found."""
+        args = ["polymarket", "markets", "get", market_id, "-o", "json"]
+        try:
+            raw = self._run_cli_cached(f"market:{market_id}", args)
+            data: dict[str, Any] = json.loads(raw)
+            return Market.from_cli(data)
+        except (RuntimeError, json.JSONDecodeError, KeyError):
+            return None
+
+    def search_markets(self, query: str, *, limit: int = 25) -> list[Market]:
+        """Search active markets by keyword in question text."""
+        markets = self.get_active_markets(limit=100)
+        query_lower = query.lower()
+        matches = [m for m in markets if query_lower in m.question.lower()]
+        return matches[:limit]
+
+    def get_leaderboard(self, *, period: str = "month") -> list[Trader]:
+        """Return top traders from the Polymarket leaderboard."""
+        args = ["polymarket", "leaderboard", "--period", period, "-o", "json"]
+        raw = self._run_cli_cached(f"leaderboard:{period}", args)
+        data: list[dict[str, Any]] = json.loads(raw)
+        return [Trader.from_cli(t, rank=i + 1) for i, t in enumerate(data)]
 
     def get_price_history(
         self,

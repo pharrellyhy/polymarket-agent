@@ -150,6 +150,29 @@ class OrderBookLevel(BaseModel):
         )
 
 
+class Trader(BaseModel):
+    """A trader from the Polymarket leaderboard."""
+
+    rank: int
+    name: str
+    volume: float = 0.0
+    pnl: float = 0.0
+    markets_traded: int = 0
+
+    @classmethod
+    def from_cli(cls, data: dict[str, Any], rank: int = 0) -> "Trader":
+        """Parse a trader dict from the polymarket CLI JSON output."""
+        return cls(
+            rank=rank,
+            name=_str_field(data, "name") or _str_field(data, "username") or "unknown",
+            volume=_float_field(data, "volume"),
+            pnl=float(data["pnl"]) if "pnl" in data else _float_field(data, "profit"),
+            markets_traded=int(data["marketsTraded"])
+            if "marketsTraded" in data
+            else int(_float_field(data, "markets_traded")),
+        )
+
+
 class OrderBook(BaseModel):
     """An order book with asks and bids."""
 

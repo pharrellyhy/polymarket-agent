@@ -1,13 +1,14 @@
 """Orchestrator — main loop coordinating data, strategies, and execution."""
 
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from polymarket_agent.config import AppConfig
 from polymarket_agent.data.client import PolymarketData
 from polymarket_agent.db import Database
-from polymarket_agent.execution.base import Portfolio
+from polymarket_agent.execution.base import Order, Portfolio
 from polymarket_agent.execution.paper import PaperTrader
 from polymarket_agent.strategies.aggregator import aggregate_signals
 from polymarket_agent.strategies.ai_analyst import AIAnalyst
@@ -40,6 +41,8 @@ class Orchestrator:
         self._db = Database(db_path)
         self._executor = PaperTrader(starting_balance=config.starting_balance, db=self._db)
         self._strategies = self._load_strategies(config.strategies)
+        self._last_signals: list[Signal] = []
+        self._last_signals_updated_at: datetime | None = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -64,6 +67,7 @@ class Orchestrator:
             min_confidence=self._config.aggregation.min_confidence,
             min_strategies=self._config.aggregation.min_strategies,
         )
+        self._cache_signals(signals)
         logger.info("Aggregated to %d signals", len(signals))
 
         trades_executed = 0
@@ -85,9 +89,53 @@ class Orchestrator:
         """Return recent trades from the database."""
         return self._db.get_trades()[:limit]
 
+    @property
+    def data(self) -> PolymarketData:
+        """Public access to the data client."""
+        return self._data
+
+    @property
+    def strategies(self) -> list[Strategy]:
+        """Return the list of active strategy instances."""
+        return self._strategies
+
+    def place_order(self, signal: Signal) -> Order | None:
+        """Place an order through the executor. Returns None if unfilled."""
+        return self._executor.place_order(signal)
+
+    def generate_signals(self) -> list[Signal]:
+        """Run all strategies and return aggregated signals without executing."""
+        markets = self._data.get_active_markets()
+        raw_signals: list[Signal] = []
+        for strategy in self._strategies:
+            try:
+                raw_signals.extend(strategy.analyze(markets, self._data))
+            except Exception:
+                logger.exception("Strategy %s failed", getattr(strategy, "name", "unknown"))
+        signals = aggregate_signals(
+            raw_signals,
+            min_confidence=self._config.aggregation.min_confidence,
+            min_strategies=self._config.aggregation.min_strategies,
+        )
+        self._cache_signals(signals)
+        return signals
+
+    def get_cached_signals(self) -> list[Signal]:
+        """Return the latest cached aggregated signals (no recomputation)."""
+        return list(self._last_signals)
+
+    def get_cached_signals_updated_at(self) -> datetime | None:
+        """Return when cached signals were last refreshed."""
+        return self._last_signals_updated_at
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _cache_signals(self, signals: list[Signal]) -> None:
+        """Store the latest aggregated signal snapshot for read-only consumers."""
+        self._last_signals = list(signals)
+        self._last_signals_updated_at = datetime.now(timezone.utc)
 
     def _load_strategies(self, strategy_configs: dict[str, dict[str, Any]]) -> list[Strategy]:
         """Instantiate and configure strategies listed in config."""

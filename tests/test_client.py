@@ -42,6 +42,13 @@ MOCK_EVENTS_JSON = json.dumps(
     ]
 )
 
+MOCK_LEADERBOARD_JSON = json.dumps(
+    [
+        {"name": "TopTrader", "volume": "500000", "pnl": "25000", "marketsTraded": "42"},
+        {"name": "SecondPlace", "volume": "300000", "pnl": "15000", "marketsTraded": "30"},
+    ]
+)
+
 MOCK_BOOK_JSON = json.dumps(
     {
         "bids": [{"price": "0.55", "size": "100"}],
@@ -59,6 +66,8 @@ def _mock_run(args, **kwargs):
         result.stdout = MOCK_EVENTS_JSON
     elif "clob book" in cmd:
         result.stdout = MOCK_BOOK_JSON
+    elif "leaderboard" in cmd:
+        result.stdout = MOCK_LEADERBOARD_JSON
     return result
 
 
@@ -85,6 +94,29 @@ def test_get_orderbook(client):
     book = client.get_orderbook("0xtok1")
     assert book.best_bid == 0.55
     assert book.best_ask == 0.65
+
+
+def test_search_markets(client):
+    """search_markets filters by keyword in question text."""
+    results = client.search_markets("rain")
+    assert len(results) == 1
+    assert results[0].id == "100"
+
+
+def test_search_markets_no_match(client):
+    """search_markets returns empty list when no match found."""
+    results = client.search_markets("xyz_nonexistent")
+    assert len(results) == 0
+
+
+def test_get_leaderboard(client):
+    """get_leaderboard returns ranked Trader objects."""
+    traders = client.get_leaderboard(period="month")
+    assert len(traders) == 2
+    assert traders[0].rank == 1
+    assert traders[0].name == "TopTrader"
+    assert traders[0].volume == 500000.0
+    assert traders[1].rank == 2
 
 
 def test_cli_error_raises(mocker):
