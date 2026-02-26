@@ -1,8 +1,6 @@
 """SignalTrader strategy — volume-filtered directional signals."""
 
-from __future__ import annotations
-
-from typing import Any
+from typing import Any, Literal
 
 from polymarket_agent.data.models import Market
 from polymarket_agent.strategies.base import Signal, Strategy
@@ -58,7 +56,7 @@ class SignalTrader(Strategy):
             return None
 
         if yes_price < _MIDPOINT:
-            side: str = "buy"
+            side: Literal["buy", "sell"] = "buy"
             token_id = market.clob_token_ids[0] if market.clob_token_ids else ""
         else:
             side = "sell"

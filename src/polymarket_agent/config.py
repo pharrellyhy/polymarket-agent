@@ -1,7 +1,5 @@
 """Configuration loading and validation."""
 
-from __future__ import annotations
-
 from pathlib import Path
 from typing import Any, Literal
 
@@ -17,6 +15,13 @@ class RiskConfig(BaseModel):
     max_open_orders: int = 10
 
 
+class AggregationConfig(BaseModel):
+    """Signal aggregation configuration."""
+
+    min_confidence: float = 0.5
+    min_strategies: int = 1
+
+
 class AppConfig(BaseModel):
     """Top-level application configuration."""
 
@@ -24,6 +29,7 @@ class AppConfig(BaseModel):
     starting_balance: float = 1000.0
     poll_interval: int = 60
     strategies: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    aggregation: AggregationConfig = Field(default_factory=AggregationConfig)
     risk: RiskConfig = Field(default_factory=RiskConfig)
 
 

@@ -4,8 +4,6 @@ Wraps the ``polymarket`` CLI tool, parsing JSON output into typed Pydantic
 models and caching results with a configurable TTL.
 """
 
-from __future__ import annotations
-
 import json
 import subprocess
 from typing import Any
@@ -90,7 +88,7 @@ class PolymarketData:
         Raises :class:`RuntimeError` when the process exits with a
         non-zero return code.
         """
-        result = subprocess.run(args, capture_output=True, text=True)  # noqa: S603
+        result = subprocess.run(args, capture_output=True, text=True, check=False)  # noqa: S603
         if result.returncode != 0:
             msg = f"polymarket CLI failed (rc={result.returncode}): {result.stderr}"
             raise RuntimeError(msg)
@@ -100,7 +98,8 @@ class PolymarketData:
         """Return cached CLI output or execute and cache the result."""
         cached = self._cache.get(key)
         if cached is not None:
-            return cached  # type: ignore[return-value]
+            assert isinstance(cached, str)
+            return cached
         raw = self._run_cli(args)
         self._cache.set(key, raw)
         return raw

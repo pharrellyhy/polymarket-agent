@@ -98,3 +98,32 @@ def test_market_handles_missing_optional_fields():
     assert market.liquidity == 0.0
     assert market.volume_24h == 0.0
     assert market.clob_token_ids == []
+
+
+def test_market_handles_null_optional_array_fields():
+    market = Market.from_cli(
+        {
+            "id": "2",
+            "question": "Null arrays?",
+            "outcomes": '["Yes","No"]',
+            "outcomePrices": '["0.4","0.6"]',
+            "volume": "100",
+            "active": True,
+            "closed": False,
+            "clobTokenIds": None,
+        }
+    )
+    assert market.clob_token_ids == []
+
+
+def test_event_handles_null_markets_list():
+    event = Event.from_cli(
+        {
+            "id": "9",
+            "title": "Null markets",
+            "active": True,
+            "closed": False,
+            "markets": None,
+        }
+    )
+    assert event.markets == []

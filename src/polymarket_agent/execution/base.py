@@ -1,7 +1,5 @@
 """Executor base class and portfolio model."""
 
-from __future__ import annotations
-
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
@@ -24,11 +22,11 @@ class Portfolio:
 
     @staticmethod
     def _position_value(pos: dict[str, Any]) -> float:
-        shares: float = pos.get("shares", 0)
+        shares: float = float(pos.get("shares", 0))
         price = pos.get("current_price")
         if price is None:
             price = pos.get("avg_price", 0)
-        return shares * price
+        return shares * float(price)
 
 
 @dataclass

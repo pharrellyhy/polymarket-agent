@@ -7,6 +7,25 @@ strategies:
     enabled: true
     volume_threshold: 10000
     price_move_threshold: 0.05
+  market_maker:
+    enabled: false
+    spread: 0.05
+    min_liquidity: 1000
+    order_size: 50
+  arbitrageur:
+    enabled: true
+    price_sum_tolerance: 0.02
+    order_size: 25
+  ai_analyst:
+    enabled: false
+    model: claude-sonnet-4-6
+    max_calls_per_hour: 20
+    min_divergence: 0.15
+    order_size: 25.0
+
+aggregation:
+  min_confidence: 0.5
+  min_strategies: 1
 
 risk:
   max_position_size: 100.0

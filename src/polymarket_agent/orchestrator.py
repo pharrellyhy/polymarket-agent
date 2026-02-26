@@ -1,7 +1,5 @@
 """Orchestrator — main loop coordinating data, strategies, and execution."""
 
-from __future__ import annotations
-
 import logging
 from pathlib import Path
 from typing import Any
@@ -11,13 +9,20 @@ from polymarket_agent.data.client import PolymarketData
 from polymarket_agent.db import Database
 from polymarket_agent.execution.base import Portfolio
 from polymarket_agent.execution.paper import PaperTrader
+from polymarket_agent.strategies.aggregator import aggregate_signals
+from polymarket_agent.strategies.ai_analyst import AIAnalyst
+from polymarket_agent.strategies.arbitrageur import Arbitrageur
 from polymarket_agent.strategies.base import Signal, Strategy
+from polymarket_agent.strategies.market_maker import MarketMaker
 from polymarket_agent.strategies.signal_trader import SignalTrader
 
 logger = logging.getLogger(__name__)
 
 STRATEGY_REGISTRY: dict[str, type[Strategy]] = {
     "signal_trader": SignalTrader,
+    "market_maker": MarketMaker,
+    "arbitrageur": Arbitrageur,
+    "ai_analyst": AIAnalyst,
 }
 
 
@@ -49,10 +54,17 @@ class Orchestrator:
         markets = self._data.get_active_markets()
         logger.info("Fetched %d active markets", len(markets))
 
-        signals: list[Signal] = []
+        raw_signals: list[Signal] = []
         for strategy in self._strategies:
-            signals.extend(strategy.analyze(markets, self._data))
-        logger.info("Generated %d signals from %d strategies", len(signals), len(self._strategies))
+            raw_signals.extend(strategy.analyze(markets, self._data))
+        logger.info("Generated %d raw signals from %d strategies", len(raw_signals), len(self._strategies))
+
+        signals = aggregate_signals(
+            raw_signals,
+            min_confidence=self._config.aggregation.min_confidence,
+            min_strategies=self._config.aggregation.min_strategies,
+        )
+        logger.info("Aggregated to %d signals", len(signals))
 
         trades_executed = 0
         if self._config.mode != "monitor":
