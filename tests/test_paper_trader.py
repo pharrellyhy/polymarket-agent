@@ -175,6 +175,38 @@ def test_paper_trader_buy_sets_metadata(trader) -> None:
     assert pos["entry_strategy"] == "test"
 
 
+def test_paper_trader_sell_writeoff_at_zero_price(trader) -> None:
+    """Selling at price=0 writes off the position and logs cost basis."""
+    paper, db = trader
+    paper.place_order(_make_signal(side="buy", price=0.5, size=50.0))
+
+    order = paper.place_order(_make_signal(side="sell", price=0.0, size=0.0))
+    assert order is not None
+    assert order.shares == pytest.approx(100.0)
+    assert order.price == 0.0
+
+    portfolio = paper.get_portfolio()
+    assert portfolio.balance == 950.0  # no proceeds added
+    assert "0xtok_100" not in portfolio.positions
+
+    trades = db.get_trades()
+    assert len(trades) == 2
+    assert "writeoff" in trades[1]["reason"]
+    assert "cost_basis=50.00" in trades[1]["reason"]
+
+
+def test_paper_trader_sell_negative_price_rejected(trader) -> None:
+    """Selling at negative price is rejected (indicates upstream bug)."""
+    paper, _db = trader
+    paper.place_order(_make_signal(side="buy", price=0.5, size=50.0))
+
+    order = paper.place_order(_make_signal(side="sell", price=-0.1, size=25.0))
+    assert order is None
+
+    portfolio = paper.get_portfolio()
+    assert "0xtok_100" in portfolio.positions  # position still open
+
+
 def test_paper_trader_recover_sets_default_metadata() -> None:
     """Recovered positions without metadata get sensible defaults."""
     with tempfile.TemporaryDirectory() as tmpdir:

@@ -2,6 +2,7 @@
 
 import json
 import logging
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
 
@@ -125,9 +126,30 @@ class PaperTrader(Executor):
             return None
 
         pos = self._positions[signal.token_id]
-        if signal.target_price <= 0:
-            logger.warning("Cannot sell at zero/negative price for token %s", signal.token_id)
+        if signal.target_price < 0:
+            logger.warning("Cannot sell at negative price for token %s", signal.token_id)
             return None
+        if signal.target_price == 0.0:
+            shares_lost = pos["shares"]
+            cost_basis = shares_lost * float(pos.get("avg_price", 0))
+            del self._positions[signal.token_id]
+            self._log_trade(
+                replace(
+                    signal,
+                    target_price=0.0,
+                    size=cost_basis,
+                    reason=f"writeoff: price=0, lost {shares_lost:.2f} shares (cost_basis={cost_basis:.2f})",
+                )
+            )
+            logger.warning("Wrote off position %s (%.2f shares, cost_basis=%.2f)", signal.token_id, shares_lost, cost_basis)
+            return Order(
+                market_id=signal.market_id,
+                token_id=signal.token_id,
+                side="sell",
+                price=0.0,
+                size=0.0,
+                shares=shares_lost,
+            )
         shares_to_sell = signal.size / signal.target_price
 
         if shares_to_sell > pos["shares"]:
@@ -143,17 +165,7 @@ class PaperTrader(Executor):
         else:
             pos["current_price"] = signal.target_price
 
-        # Update signal size to reflect actual proceeds for DB logging
-        signal = Signal(
-            strategy=signal.strategy,
-            market_id=signal.market_id,
-            token_id=signal.token_id,
-            side=signal.side,
-            confidence=signal.confidence,
-            target_price=signal.target_price,
-            size=proceeds,
-            reason=signal.reason,
-        )
+        logged_signal = replace(signal, size=proceeds)
 
         order = Order(
             market_id=signal.market_id,
@@ -164,7 +176,7 @@ class PaperTrader(Executor):
             shares=shares_to_sell,
         )
 
-        self._log_trade(signal)
+        self._log_trade(logged_signal)
         logger.info(
             "SELL %.2f shares of %s @ %.4f (proceeds: %.2f)",
             shares_to_sell,
