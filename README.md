@@ -8,16 +8,16 @@ Agent-friendly auto-trading pipeline for Polymarket prediction markets.
 ## Features
 
 - **Typed Python API** — wraps the Polymarket CLI into Pydantic v2 models (Market, Event, OrderBook, Price)
-- **Pluggable strategy engine** — SignalTrader, MarketMaker, Arbitrageur, and AIAnalyst modules
+- **Pluggable strategy engine** — SignalTrader, MarketMaker, Arbitrageur, and AIAnalyst (Anthropic/OpenAI) modules
 - **Paper trading** — simulated order fills against real order-book data, logged to SQLite
 - **Live trading** — real order placement via py-clob-client with private key signing
 - **MCP server** — 22 tools for AI agent integration (market data, trading, signals, conditional orders, backtesting, monitoring)
 - **Conditional orders** — stop-loss, take-profit, and trailing stop with auto-creation
 - **Position sizing** — Kelly criterion, fractional Kelly, and fixed sizing methods
 - **Backtesting** — historical CSV replay, performance metrics (Sharpe, drawdown, win rate, profit factor)
-- **Automated strategy tuning** — periodic evaluation + Claude Code-driven config adjustments with config hot-reload
+- **Automated strategy tuning** — periodic evaluation + LLM-driven config adjustments (Anthropic, OpenAI, or local endpoints) with config hot-reload
 - **Monitoring & Dashboard** — structured JSON logging, alert webhooks, signal/portfolio tracking, web dashboard
-- **CLI interface** — `run`, `tick`, `status`, `report`, `evaluate`, `backtest`, `dashboard`, `mcp` commands
+- **CLI interface** — `run`, `tick`, `status`, `report`, `evaluate`, `autotune`, `backtest`, `dashboard`, `mcp` commands
 - **TTL cache** — in-memory per-key cache with configurable expiration on market data
 - **YAML configuration** — mode selection, strategy params, risk limits, and order management in `config.yaml`
 - **Signal aggregation** — deduplication, confidence filtering, and cross-strategy consensus
@@ -33,7 +33,7 @@ flowchart LR
     DB[(SQLite)]
     Orch["Orchestrator"]
     Config["config.yaml"]
-    Tune["Auto-Tune<br/>(launchd, 6h)"]
+    Tune["Auto-Tune<br/>(launchd, 6h)<br/>Anthropic / OpenAI"]
 
     CLI -->|JSON| Data
     Orch --> Data
@@ -46,7 +46,7 @@ flowchart LR
     Tune -->|evaluate + edit| Config
 ```
 
-The **Orchestrator** drives a fetch → analyze → execute cycle each tick, hot-reloading `config.yaml` when it detects changes. The **Data Layer** shells out to the `polymarket` CLI with `-o json` and parses responses into Pydantic models. **Strategies** consume market data and emit `Signal` objects. The **Executor** fills orders (paper or live) and persists trades to SQLite. The **Auto-Tune** loop periodically evaluates performance and invokes Claude Code to adjust strategy parameters.
+The **Orchestrator** drives a fetch → analyze → execute cycle each tick, hot-reloading `config.yaml` when it detects changes. The **Data Layer** shells out to the `polymarket` CLI with `-o json` and parses responses into Pydantic models. **Strategies** consume market data and emit `Signal` objects. The **Executor** fills orders (paper or live) and persists trades to SQLite. The **Auto-Tune** loop periodically evaluates performance and uses an LLM (Anthropic, OpenAI, or local endpoints) to adjust strategy parameters.
 
 ## Quick Start
 
@@ -153,7 +153,7 @@ strategies:
 
 When the sum of outcome prices deviates from 1.0 beyond tolerance, buys the underpriced side (if sum < 1.0) or sells the overpriced side (if sum > 1.0). Confidence scales with deviation magnitude.
 
-**AIAnalyst** — uses Claude to estimate market probabilities and trades on divergence.
+**AIAnalyst** — uses an LLM to estimate market probabilities and trades on divergence.
 
 ```yaml
 strategies:
@@ -163,9 +163,12 @@ strategies:
     max_calls_per_hour: 20   # rate limit
     min_divergence: 0.15     # min difference between AI estimate and market price
     order_size: 25.0         # USDC per trade
+    # provider: anthropic    # anthropic (default) or openai
+    # base_url: http://localhost:11434/v1  # for local/custom endpoints
+    # api_key_env: OPENAI_API_KEY          # env var name for API key
 ```
 
-Sends each market's question and description to Claude, parses a probability from the response. If the estimate diverges from the market price by more than `min_divergence`, generates a buy or sell signal. Requires `ANTHROPIC_API_KEY`. Gracefully disabled when the key is not set.
+Sends each market's question and description to the configured LLM provider, parses a probability from the response. If the estimate diverges from the market price by more than `min_divergence`, generates a buy or sell signal. Supports both Anthropic (default) and OpenAI-compatible providers, including local models served via Ollama or vLLM. Requires the appropriate API key (`ANTHROPIC_API_KEY` or `OPENAI_API_KEY`). Gracefully disabled when the key is not set.
 
 **Signal Aggregation** — all strategy signals pass through an aggregation step before execution:
 
@@ -395,7 +398,7 @@ The evaluate output includes: metrics (return, Sharpe, drawdown, win rate), per-
 
 ### Auto-Tuning
 
-The auto-tune pipeline periodically evaluates trading performance and invokes Claude Code to decide whether to adjust `config.yaml`. The trading loop hot-reloads config changes without restarting.
+The auto-tune pipeline periodically evaluates trading performance and uses an LLM to decide whether to adjust `config.yaml`. Supports three provider modes: Claude Code CLI (`claude -p`), direct Anthropic API, or any OpenAI-compatible endpoint. The trading loop hot-reloads config changes without restarting.
 
 ```
 ┌────────────────────────────────────┐
@@ -407,15 +410,15 @@ The auto-tune pipeline periodically evaluates trading performance and invokes Cl
                    │ reads config.yaml
 ┌──────────────────┴─────────────────┐
 │ config.yaml                        │
-│  (edited by Claude Code)           │
+│  (edited by LLM tuner)             │
 └──────────────────┬─────────────────┘
                    │ writes
 ┌──────────────────┴─────────────────┐
 │ Auto-Tune (launchd, every 6h)      │
 │ scripts/autotune.sh                │
-│  1. polymarket-agent evaluate      │
-│  2. pipe JSON → claude -p          │
-│  3. Claude edits config.yaml       │
+│  provider=claude → claude -p       │
+│  provider=openai → autotune CLI    │
+│  provider=anthropic → autotune CLI │
 └────────────────────────────────────┘
 ```
 
@@ -424,13 +427,32 @@ The auto-tune pipeline periodically evaluates trading performance and invokes Cl
 **Setup auto-tuning:**
 
 ```bash
-# Run manually
+# Run manually (default: Claude Code CLI)
 bash scripts/autotune.sh
 
-# Or schedule via macOS launchd (every 6 hours)
+# Use OpenAI-compatible provider instead
+AUTOTUNE_PROVIDER=openai AUTOTUNE_MODEL=gpt-4o bash scripts/autotune.sh
+
+# Use Anthropic API directly (no Claude Code CLI needed)
+AUTOTUNE_PROVIDER=anthropic AUTOTUNE_MODEL=claude-sonnet-4-6 bash scripts/autotune.sh
+
+# Or run the CLI subcommand directly
+uv run polymarket-agent autotune --provider openai --model gpt-4o --period 6h
+
+# Schedule via macOS launchd (every 6 hours)
 cp scripts/com.polymarket-agent.autotune.plist ~/Library/LaunchAgents/
 launchctl load ~/Library/LaunchAgents/com.polymarket-agent.autotune.plist
 ```
+
+**Environment variables** for `autotune.sh`:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AUTOTUNE_PROVIDER` | `claude` | `claude` (Claude Code CLI), `openai`, or `anthropic` |
+| `AUTOTUNE_MODEL` | — | Required for `openai`/`anthropic` providers (e.g. `gpt-4o`) |
+| `AUTOTUNE_PERIOD` | `6h` | Evaluation lookback period |
+| `AUTOTUNE_BASE_URL` | — | Optional API base URL for OpenAI-compatible endpoints |
+| `AUTOTUNE_API_KEY_ENV` | — | Optional override for API key env var name |
 
 **Tuning rules** enforced by the auto-tune prompt:
 - Never changes the `mode` field
@@ -465,7 +487,8 @@ See `deploy/env.example` for all available environment variables.
 |----------|---------|----------|
 | `POLYMARKET_PRIVATE_KEY` | Wallet private key for live trading | Live mode only |
 | `POLYMARKET_FUNDER` | Funder address for Magic/proxy wallets | Optional (live mode) |
-| `ANTHROPIC_API_KEY` | API key for AIAnalyst strategy | AI features only |
+| `ANTHROPIC_API_KEY` | API key for AIAnalyst / autotune (Anthropic provider) | AI features only |
+| `OPENAI_API_KEY` | API key for AIAnalyst / autotune (OpenAI provider) | OpenAI provider only |
 
 See [`deploy/env.example`](deploy/env.example) for all available variables.
 
@@ -497,6 +520,9 @@ strategies:
     max_calls_per_hour: 20
     min_divergence: 0.15
     order_size: 25.0
+    # provider: anthropic       # anthropic (default) or openai
+    # base_url: null             # for local/custom OpenAI-compatible endpoints
+    # api_key_env: null          # override env var name for API key
 
 aggregation:
   min_confidence: 0.5
@@ -540,9 +566,10 @@ scripts/
 └── com.polymarket-agent.autotune.plist  # macOS launchd schedule (every 6h)
 
 src/polymarket_agent/
-├── cli.py                  # Typer CLI entry point (run, tick, status, report, evaluate, …)
+├── cli.py                  # Typer CLI entry point (run, tick, status, report, evaluate, autotune, …)
 ├── config.py               # Pydantic config loading from YAML + config_mtime()
 ├── orchestrator.py          # Main loop + config hot-reload
+├── autotune.py             # LLM-based config auto-tuner (Anthropic/OpenAI)
 ├── db.py                   # SQLite persistence
 ├── orders.py               # Conditional order models
 ├── position_sizing.py      # Kelly criterion position sizing
@@ -557,7 +584,7 @@ src/polymarket_agent/
 │   ├── signal_trader.py    # Volume/price-move signal strategy
 │   ├── market_maker.py     # Bid/ask quoting around midpoint
 │   ├── arbitrageur.py      # Price-sum deviation strategy
-│   ├── ai_analyst.py       # Claude-based probability strategy
+│   ├── ai_analyst.py       # LLM-based probability strategy (Anthropic/OpenAI)
 │   └── aggregator.py       # Signal dedup/filter/consensus
 ├── backtest/
 │   ├── historical.py       # CSV-based historical data provider
@@ -606,8 +633,8 @@ mypy src/
 | **6. Order Management** | Done | Stop-loss, take-profit, trailing stop, Kelly sizing |
 | **7. Backtesting** | Done | Historical data replay, performance metrics, DataProvider protocol |
 | **8. Monitoring** | Done | Dashboard, structured logging, alerts, signal/portfolio tracking |
-| **9. Auto-Tuning** | Done | Config hot-reload, evaluate command, Claude Code-driven parameter tuning |
+| **9. Auto-Tuning** | Done | Config hot-reload, evaluate command, multi-provider LLM-driven parameter tuning |
 
 ## Tech Stack
 
-Python 3.12 · Pydantic v2 · Typer · SQLite · PyYAML · FastAPI · Chart.js · ruff · mypy · pytest
+Python 3.12 · Pydantic v2 · Typer · SQLite · PyYAML · Anthropic SDK · OpenAI SDK (optional) · FastAPI · Chart.js · ruff · mypy · pytest
