@@ -4,7 +4,7 @@ starting_balance: 1000.0
 poll_interval: 60
 strategies:
   signal_trader:
-    enabled: true
+    enabled: false
     volume_threshold: 1000
     price_move_threshold: 0.015
     min_price: 0.05
@@ -14,15 +14,18 @@ strategies:
     min_liquidity: 1000
     order_size: 50
   arbitrageur:
-    enabled: true
+    enabled: false
     price_sum_tolerance: 0.015
     order_size: 25
   ai_analyst:
-    enabled: false
-    model: claude-opus-4-6
+    enabled: true
+    model: gpt-5.2
     max_calls_per_hour: 20
     min_divergence: 0.15
     order_size: 25.0
+    provider: openai
+    base_url: https://api.shubiaobiao.cn/v1
+    api_key_env: OPENAI_API_KEY
 aggregation:
   min_confidence: 0.3
   min_strategies: 1
