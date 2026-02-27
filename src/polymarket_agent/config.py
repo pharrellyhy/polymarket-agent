@@ -58,6 +58,16 @@ class MonitoringConfig(BaseModel):
     dashboard_port: int = 8080
 
 
+class ExitManagerConfig(BaseModel):
+    """Exit manager configuration."""
+
+    enabled: bool = True
+    profit_target_pct: float = 0.15
+    stop_loss_pct: float = 0.12
+    signal_reversal: bool = True
+    max_hold_hours: int = 24
+
+
 class AppConfig(BaseModel):
     """Top-level application configuration."""
 
@@ -70,6 +80,7 @@ class AppConfig(BaseModel):
     conditional_orders: ConditionalOrderConfig = Field(default_factory=ConditionalOrderConfig)
     position_sizing: PositionSizingConfig = Field(default_factory=PositionSizingConfig)
     backtest: BacktestConfig = Field(default_factory=BacktestConfig)
+    exit_manager: ExitManagerConfig = Field(default_factory=ExitManagerConfig)
     monitoring: MonitoringConfig = Field(default_factory=MonitoringConfig)
 
 

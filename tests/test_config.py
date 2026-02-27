@@ -46,3 +46,12 @@ def test_default_config() -> None:
     assert config.risk.max_position_size == 100.0
     assert config.aggregation.min_confidence == 0.5
     assert config.aggregation.min_strategies == 1
+
+
+def test_exit_manager_config_defaults() -> None:
+    cfg = AppConfig()
+    assert cfg.exit_manager.enabled is True
+    assert cfg.exit_manager.profit_target_pct == 0.15
+    assert cfg.exit_manager.stop_loss_pct == 0.12
+    assert cfg.exit_manager.signal_reversal is True
+    assert cfg.exit_manager.max_hold_hours == 24

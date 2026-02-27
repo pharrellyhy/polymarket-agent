@@ -1,12 +1,12 @@
+# Auto-tuned on 2026-02-27
 mode: paper
 starting_balance: 1000.0
 poll_interval: 60
-
 strategies:
   signal_trader:
     enabled: true
-    volume_threshold: 2000
-    price_move_threshold: 0.02
+    volume_threshold: 1000
+    price_move_threshold: 0.015
     min_price: 0.05
   market_maker:
     enabled: false
@@ -15,7 +15,7 @@ strategies:
     order_size: 50
   arbitrageur:
     enabled: true
-    price_sum_tolerance: 0.01
+    price_sum_tolerance: 0.015
     order_size: 25
   ai_analyst:
     enabled: false
@@ -23,39 +23,36 @@ strategies:
     max_calls_per_hour: 20
     min_divergence: 0.15
     order_size: 25.0
-    # provider: anthropic or openai (default: anthropic)
-    # base_url: optional, for local/custom endpoints (e.g. http://localhost:11434/v1)
-    # api_key_env: optional, env var name for API key
-
 aggregation:
   min_confidence: 0.3
   min_strategies: 1
-
 risk:
   max_position_size: 200.0
   max_daily_loss: 500.0
   max_open_orders: 10
-
 conditional_orders:
   enabled: true
-  default_stop_loss_pct: 0.50
-  default_take_profit_pct: 0.50
+  default_stop_loss_pct: 0.12
+  default_take_profit_pct: 0.15
   trailing_stop_enabled: false
   trailing_stop_pct: 0.05
-
 position_sizing:
   method: fractional_kelly
   kelly_fraction: 0.25
-  max_bet_pct: 0.10
-
+  max_bet_pct: 0.1
 backtest:
   default_spread: 0.02
   snapshot_interval: 86400
-
+exit_manager:
+  enabled: true
+  profit_target_pct: 0.15
+  stop_loss_pct: 0.12
+  signal_reversal: true
+  max_hold_hours: 24
 monitoring:
   structured_logging: false
   log_file: null
   alert_webhooks: []
   snapshot_interval: 300
-  dashboard_host: "0.0.0.0"
+  dashboard_host: 0.0.0.0
   dashboard_port: 11648
