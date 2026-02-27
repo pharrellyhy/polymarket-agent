@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from polymarket_agent.data.models import Market
+    from polymarket_agent.data.provider import DataProvider
 
 
 @dataclass
@@ -26,6 +27,8 @@ class Signal:
     target_price: float  # desired entry price per share
     size: float  # USDC amount to trade
     reason: str
+    stop_loss: float | None = None
+    take_profit: float | None = None
 
 
 class Strategy(ABC):
@@ -34,7 +37,7 @@ class Strategy(ABC):
     name: str
 
     @abstractmethod
-    def analyze(self, markets: list[Market], data: Any) -> list[Signal]:
+    def analyze(self, markets: list[Market], data: DataProvider) -> list[Signal]:
         """Analyze markets and return trade signals."""
 
     def configure(self, config: dict[str, Any]) -> None:  # noqa: B027

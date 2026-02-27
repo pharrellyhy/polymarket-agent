@@ -10,10 +10,12 @@ from typing import Any, Callable, Literal, TypeVar, cast
 
 from mcp.server.fastmcp import FastMCP
 
+from polymarket_agent import __version__
 from polymarket_agent.config import AppConfig, load_config
 from polymarket_agent.data.client import PolymarketData
 from polymarket_agent.data.models import Market
 from polymarket_agent.orchestrator import Orchestrator
+from polymarket_agent.orders import OrderStatus, OrderType
 from polymarket_agent.strategies.base import Signal
 
 logger = logging.getLogger(__name__)
@@ -39,7 +41,7 @@ async def _app_lifespan(_server: FastMCP) -> AsyncIterator[AppContext]:
     cfg = load_config(_config_path) if _config_path.exists() else AppConfig()
     orch = Orchestrator(config=cfg, db_path=_db_path)
     try:
-        yield AppContext(orchestrator=orch, data=orch.data, config=cfg)
+        yield AppContext(orchestrator=orch, data=cast(PolymarketData, orch.data), config=cfg)
     finally:
         orch.close()
 
@@ -226,8 +228,7 @@ def get_event(event_id: str) -> dict[str, Any]:
             "start_date": event.start_date,
             "end_date": event.end_date,
             "markets": [
-                {"id": m.id, "question": m.question, "outcome_prices": m.outcome_prices}
-                for m in event.markets
+                {"id": m.id, "question": m.question, "outcome_prices": m.outcome_prices} for m in event.markets
             ],
         }
 
@@ -471,3 +472,221 @@ def analyze_market(market_id: str) -> dict[str, Any]:
         "current_price": _yes_price(market),
         "signal": asdict(signal),
     }
+
+
+# ------------------------------------------------------------------
+# Backtest tools
+# ------------------------------------------------------------------
+
+
+@mcp.tool()
+def run_backtest(data_dir: str) -> dict[str, Any]:
+    """Run a backtest over historical CSV data in the given directory.
+
+    Loads CSV files (with columns: timestamp, market_id, question, yes_price,
+    volume, token_id) and replays them through the configured strategies.
+
+    Args:
+        data_dir: Path to directory containing CSV data files.
+    """
+    from polymarket_agent.backtest.engine import BacktestEngine  # noqa: PLC0415
+    from polymarket_agent.backtest.historical import HistoricalDataProvider  # noqa: PLC0415
+
+    data_path = Path(data_dir)
+    if not data_path.is_dir():
+        return {"error": f"{data_dir} is not a directory"}
+
+    ctx = _get_ctx()
+    provider = HistoricalDataProvider(data_path, default_spread=ctx.config.backtest.default_spread)
+
+    if provider.total_steps == 0:
+        return {"error": "No data loaded — check CSV files in the data directory"}
+
+    from polymarket_agent.orchestrator import STRATEGY_REGISTRY  # noqa: PLC0415
+
+    strategies = []
+    for name, params in ctx.config.strategies.items():
+        if not params.get("enabled", False):
+            continue
+        cls = STRATEGY_REGISTRY.get(name)
+        if cls is None:
+            continue
+        instance = cls()
+        instance.configure(params)
+        strategies.append(instance)
+
+    engine = BacktestEngine(config=ctx.config, strategies=strategies, data_provider=provider)
+    result = engine.run()
+    return result.to_dict()
+
+
+# ------------------------------------------------------------------
+# Monitoring tools
+# ------------------------------------------------------------------
+
+
+@mcp.tool()
+def get_signal_log(strategy: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+    """Get logged signals from the database.
+
+    Args:
+        strategy: Filter by strategy name (optional).
+        limit: Maximum number of entries to return (default 100).
+    """
+    ctx = _get_ctx()
+    return [
+        {k: str(v) if not isinstance(v, (int, float, bool, str, type(None))) else v for k, v in row.items()}
+        for row in ctx.orchestrator.db.get_signal_log(strategy=strategy, limit=limit)
+    ]
+
+
+@mcp.tool()
+def get_portfolio_snapshots(limit: int = 100) -> list[dict[str, Any]]:
+    """Get portfolio value snapshots over time.
+
+    Args:
+        limit: Maximum number of snapshots to return (default 100).
+    """
+    ctx = _get_ctx()
+    return [
+        {k: str(v) if not isinstance(v, (int, float, bool, str, type(None))) else v for k, v in row.items()}
+        for row in ctx.orchestrator.db.get_portfolio_snapshots(limit=limit)
+    ]
+
+
+@mcp.tool()
+def get_strategy_performance() -> dict[str, Any]:
+    """Get per-strategy performance summary from logged signals and trades.
+
+    Shows signal count, execution count, and trade volume per strategy.
+    """
+    ctx = _get_ctx()
+    signals = ctx.orchestrator.db.get_signal_log(limit=10000)
+    trades = ctx.orchestrator.db.get_trades()
+
+    signal_counts: dict[str, int] = {}
+    executed_counts: dict[str, int] = {}
+    for s in signals:
+        name = str(s.get("strategy", "unknown"))
+        signal_counts[name] = signal_counts.get(name, 0) + 1
+        if s.get("status") == "executed":
+            executed_counts[name] = executed_counts.get(name, 0) + 1
+
+    trade_volume: dict[str, float] = {}
+    for t in trades:
+        name = str(t.get("strategy", "unknown"))
+        trade_volume[name] = trade_volume.get(name, 0) + float(str(t.get("size", 0)))
+
+    all_strategies = set(signal_counts) | set(trade_volume)
+    result: dict[str, Any] = {}
+    for name in sorted(all_strategies):
+        result[name] = {
+            "signals_generated": signal_counts.get(name, 0),
+            "signals_executed": executed_counts.get(name, 0),
+            "trade_volume": round(trade_volume.get(name, 0), 2),
+        }
+
+    return result
+
+
+# ------------------------------------------------------------------
+# System tools
+# ------------------------------------------------------------------
+
+
+@mcp.tool()
+def health_check() -> dict[str, Any]:
+    """Check agent health status including version, mode, and strategy count."""
+    ctx = _get_ctx()
+    return {
+        "status": "ok",
+        "version": __version__,
+        "mode": ctx.config.mode,
+        "strategy_count": len(ctx.orchestrator.strategies),
+        "strategies": [s.name for s in ctx.orchestrator.strategies],
+    }
+
+
+# ------------------------------------------------------------------
+# Conditional order tools
+# ------------------------------------------------------------------
+
+
+@mcp.tool()
+def get_conditional_orders() -> list[dict[str, Any]]:
+    """List all active conditional orders (stop-loss, take-profit, trailing stop)."""
+    ctx = _get_ctx()
+    orders = ctx.orchestrator.db.get_active_conditional_orders()
+    return [
+        {
+            "id": o.id,
+            "token_id": o.token_id,
+            "market_id": o.market_id,
+            "order_type": o.order_type.value,
+            "trigger_price": o.trigger_price,
+            "size": o.size,
+            "high_watermark": o.high_watermark,
+            "trail_percent": o.trail_percent,
+            "parent_strategy": o.parent_strategy,
+            "reason": o.reason,
+            "created_at": o.created_at,
+        }
+        for o in orders
+    ]
+
+
+@mcp.tool()
+def cancel_conditional_order(order_id: int) -> dict[str, Any]:
+    """Cancel an active conditional order by its ID."""
+    ctx = _get_ctx()
+    orders = ctx.orchestrator.db.get_active_conditional_orders()
+    if not any(o.id == order_id for o in orders):
+        return {"error": f"No active conditional order with id {order_id}"}
+    ctx.orchestrator.db.update_conditional_order(order_id, status=OrderStatus.CANCELLED)
+    return {"status": "cancelled", "order_id": order_id}
+
+
+@mcp.tool()
+def create_conditional_order(
+    token_id: str,
+    market_id: str,
+    order_type: str,
+    trigger_price: float,
+    size: float,
+    trail_percent: float | None = None,
+) -> dict[str, Any]:
+    """Create a new conditional order (stop_loss, take_profit, or trailing_stop).
+
+    Args:
+        token_id: The CLOB token ID.
+        market_id: The market ID.
+        order_type: One of 'stop_loss', 'take_profit', 'trailing_stop'.
+        trigger_price: Price at which the order triggers.
+        size: USDC amount for the sell order.
+        trail_percent: Required for trailing_stop (e.g. 0.05 for 5%).
+    """
+    try:
+        otype = OrderType(order_type)
+    except ValueError:
+        return {"error": f"Invalid order_type '{order_type}'. Must be one of: stop_loss, take_profit, trailing_stop"}
+
+    if size <= 0:
+        return {"error": "Size must be greater than 0"}
+
+    if otype == OrderType.TRAILING_STOP and trail_percent is None:
+        return {"error": "trail_percent is required for trailing_stop orders"}
+
+    ctx = _get_ctx()
+    high_watermark = trigger_price if otype == OrderType.TRAILING_STOP else None
+    order_id = ctx.orchestrator.db.create_conditional_order(
+        token_id=token_id,
+        market_id=market_id,
+        order_type=otype,
+        trigger_price=trigger_price,
+        size=size,
+        high_watermark=high_watermark,
+        trail_percent=trail_percent,
+        parent_strategy="mcp_manual",
+        reason=f"Manual {order_type} via MCP tool",
+    )
+    return {"status": "created", "order_id": order_id, "order_type": order_type}

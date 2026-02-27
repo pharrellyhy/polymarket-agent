@@ -1,10 +1,15 @@
 """Arbitrageur strategy — exploits pricing inconsistencies within markets."""
 
+from __future__ import annotations
+
 import logging
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from polymarket_agent.data.models import Market
 from polymarket_agent.strategies.base import Signal, Strategy
+
+if TYPE_CHECKING:
+    from polymarket_agent.data.provider import DataProvider
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +37,7 @@ class Arbitrageur(Strategy):
         self._min_deviation = float(config.get("min_deviation", _DEFAULT_MIN_DEVIATION))
         self._order_size = float(config.get("order_size", _DEFAULT_ORDER_SIZE))
 
-    def analyze(self, markets: list[Market], data: Any) -> list[Signal]:
+    def analyze(self, markets: list[Market], data: DataProvider) -> list[Signal]:
         return [
             s
             for market in markets

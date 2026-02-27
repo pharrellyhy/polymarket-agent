@@ -22,6 +22,42 @@ class AggregationConfig(BaseModel):
     min_strategies: int = 1
 
 
+class ConditionalOrderConfig(BaseModel):
+    """Conditional order (stop-loss / take-profit / trailing stop) configuration."""
+
+    enabled: bool = False
+    default_stop_loss_pct: float = 0.10
+    default_take_profit_pct: float = 0.20
+    trailing_stop_enabled: bool = False
+    trailing_stop_pct: float = 0.05
+
+
+class PositionSizingConfig(BaseModel):
+    """Position sizing configuration."""
+
+    method: Literal["fixed", "kelly", "fractional_kelly"] = "fixed"
+    kelly_fraction: float = 0.25
+    max_bet_pct: float = 0.10
+
+
+class BacktestConfig(BaseModel):
+    """Backtesting configuration."""
+
+    default_spread: float = 0.02
+    snapshot_interval: int = 86400
+
+
+class MonitoringConfig(BaseModel):
+    """Monitoring and dashboard configuration."""
+
+    structured_logging: bool = False
+    log_file: str | None = None
+    alert_webhooks: list[str] = Field(default_factory=list)
+    snapshot_interval: int = 300
+    dashboard_host: str = "0.0.0.0"
+    dashboard_port: int = 8080
+
+
 class AppConfig(BaseModel):
     """Top-level application configuration."""
 
@@ -31,6 +67,10 @@ class AppConfig(BaseModel):
     strategies: dict[str, dict[str, Any]] = Field(default_factory=dict)
     aggregation: AggregationConfig = Field(default_factory=AggregationConfig)
     risk: RiskConfig = Field(default_factory=RiskConfig)
+    conditional_orders: ConditionalOrderConfig = Field(default_factory=ConditionalOrderConfig)
+    position_sizing: PositionSizingConfig = Field(default_factory=PositionSizingConfig)
+    backtest: BacktestConfig = Field(default_factory=BacktestConfig)
+    monitoring: MonitoringConfig = Field(default_factory=MonitoringConfig)
 
 
 def load_config(path: Path) -> AppConfig:

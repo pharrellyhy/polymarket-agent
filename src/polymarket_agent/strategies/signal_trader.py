@@ -1,9 +1,14 @@
 """SignalTrader strategy — volume-filtered directional signals."""
 
-from typing import Any, Literal
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any, Literal
 
 from polymarket_agent.data.models import Market
 from polymarket_agent.strategies.base import Signal, Strategy
+
+if TYPE_CHECKING:
+    from polymarket_agent.data.provider import DataProvider
 
 _DEFAULT_VOLUME_THRESHOLD: float = 5000.0
 _DEFAULT_PRICE_MOVE_THRESHOLD: float = 0.05
@@ -33,7 +38,7 @@ class SignalTrader(Strategy):
         self._volume_threshold = float(config.get("volume_threshold", _DEFAULT_VOLUME_THRESHOLD))
         self._price_move_threshold = float(config.get("price_move_threshold", _DEFAULT_PRICE_MOVE_THRESHOLD))
 
-    def analyze(self, markets: list[Market], data: Any) -> list[Signal]:
+    def analyze(self, markets: list[Market], data: DataProvider) -> list[Signal]:
         """Return directional signals for qualifying markets."""
         return [s for market in markets if (s := self._evaluate(market)) is not None]
 

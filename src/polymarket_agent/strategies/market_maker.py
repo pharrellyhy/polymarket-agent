@@ -1,10 +1,15 @@
 """MarketMaker strategy — provides liquidity by quoting around the midpoint."""
 
+from __future__ import annotations
+
 import logging
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from polymarket_agent.data.models import Market
 from polymarket_agent.strategies.base import Signal, Strategy
+
+if TYPE_CHECKING:
+    from polymarket_agent.data.provider import DataProvider
 
 logger = logging.getLogger(__name__)
 
@@ -36,13 +41,13 @@ class MarketMaker(Strategy):
         self._min_liquidity = float(config.get("min_liquidity", _DEFAULT_MIN_LIQUIDITY))
         self._order_size = float(config.get("order_size", _DEFAULT_ORDER_SIZE))
 
-    def analyze(self, markets: list[Market], data: Any) -> list[Signal]:
+    def analyze(self, markets: list[Market], data: DataProvider) -> list[Signal]:
         signals: list[Signal] = []
         for market in markets:
             signals.extend(self._quote_market(market, data))
         return signals
 
-    def _quote_market(self, market: Market, data: Any) -> list[Signal]:
+    def _quote_market(self, market: Market, data: DataProvider) -> list[Signal]:
         if not market.active or market.closed:
             return []
         if market.liquidity < self._min_liquidity:

@@ -1,0 +1,15 @@
+[Unit]
+Description=Polymarket Agent Trading Bot
+After=network.target
+
+[Service]
+Type=simple
+User=polymarket
+WorkingDirectory=/opt/polymarket-agent
+EnvironmentFile=/opt/polymarket-agent/.env
+ExecStart=/opt/polymarket-agent/.venv/bin/polymarket-agent run --db /opt/polymarket-agent/data/polymarket_agent.db
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

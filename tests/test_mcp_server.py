@@ -26,20 +26,28 @@ from polymarket_agent.execution.base import Order, Portfolio
 from polymarket_agent.mcp_server import (
     AppContext,
     analyze_market,
+    cancel_conditional_order,
+    create_conditional_order,
+    get_conditional_orders,
     get_event,
     get_leaderboard,
     get_market_detail,
     get_portfolio,
+    get_portfolio_snapshots,
     get_positions,
     get_price,
     get_price_history,
+    get_signal_log,
     get_signals,
     get_spread,
+    get_strategy_performance,
     get_volume,
+    health_check,
     place_trade,
     refresh_signals,
     search_markets,
 )
+from polymarket_agent.orders import ConditionalOrder, OrderStatus, OrderType
 from polymarket_agent.orchestrator import Orchestrator
 from polymarket_agent.strategies.ai_analyst import AIAnalyst
 from polymarket_agent.strategies.base import Signal
@@ -567,3 +575,189 @@ class TestGetPositions:
             result = get_positions("bad_addr")
         assert len(result) == 1
         assert "error" in result[0]
+
+
+# ------------------------------------------------------------------
+# health_check
+# ------------------------------------------------------------------
+
+
+class TestHealthCheck:
+    def test_returns_status(self) -> None:
+        ctx = _make_ctx()
+        with _patch_ctx(ctx):
+            result = health_check()
+        assert result["status"] == "ok"
+        assert result["mode"] == "paper"
+        assert isinstance(result["version"], str)
+        assert isinstance(result["strategy_count"], int)
+
+
+# ------------------------------------------------------------------
+# Conditional order MCP tools
+# ------------------------------------------------------------------
+
+
+def _make_ctx_with_db(
+    *,
+    mode: str = "paper",
+    orders: list[ConditionalOrder] | None = None,
+) -> AppContext:
+    """Build AppContext with a mock DB for conditional order testing."""
+    ctx = _make_ctx(mode=mode)
+    mock_db = MagicMock()
+    mock_db.get_active_conditional_orders.return_value = orders or []
+    mock_db.create_conditional_order.return_value = 42
+    ctx.orchestrator.db = mock_db
+    return ctx
+
+
+class TestGetConditionalOrders:
+    def test_returns_empty_list(self) -> None:
+        ctx = _make_ctx_with_db()
+        with _patch_ctx(ctx):
+            result = get_conditional_orders()
+        assert result == []
+
+    def test_returns_active_orders(self) -> None:
+        order = ConditionalOrder(
+            id=1, token_id="0xtok1", market_id="100",
+            order_type=OrderType.STOP_LOSS, status=OrderStatus.ACTIVE,
+            trigger_price=0.45, size=25.0, parent_strategy="test",
+            reason="Auto SL", created_at="2026-01-01T00:00:00",
+        )
+        ctx = _make_ctx_with_db(orders=[order])
+        with _patch_ctx(ctx):
+            result = get_conditional_orders()
+        assert len(result) == 1
+        assert result[0]["order_type"] == "stop_loss"
+        assert result[0]["trigger_price"] == 0.45
+
+
+class TestCancelConditionalOrder:
+    def test_cancel_existing(self) -> None:
+        order = ConditionalOrder(
+            id=5, token_id="0xtok1", market_id="100",
+            order_type=OrderType.STOP_LOSS, status=OrderStatus.ACTIVE,
+            trigger_price=0.45, size=25.0, parent_strategy="test",
+            reason="SL",
+        )
+        ctx = _make_ctx_with_db(orders=[order])
+        with _patch_ctx(ctx):
+            result = cancel_conditional_order(5)
+        assert result["status"] == "cancelled"
+        assert result["order_id"] == 5
+
+    def test_cancel_nonexistent(self) -> None:
+        ctx = _make_ctx_with_db()
+        with _patch_ctx(ctx):
+            result = cancel_conditional_order(999)
+        assert "error" in result
+
+
+class TestCreateConditionalOrder:
+    def test_create_stop_loss(self) -> None:
+        ctx = _make_ctx_with_db()
+        with _patch_ctx(ctx):
+            result = create_conditional_order("0xtok1", "100", "stop_loss", 0.45, 25.0)
+        assert result["status"] == "created"
+        assert result["order_id"] == 42
+
+    def test_create_trailing_stop(self) -> None:
+        ctx = _make_ctx_with_db()
+        with _patch_ctx(ctx):
+            result = create_conditional_order("0xtok1", "100", "trailing_stop", 0.60, 25.0, trail_percent=0.05)
+        assert result["status"] == "created"
+
+    def test_invalid_order_type(self) -> None:
+        ctx = _make_ctx_with_db()
+        with _patch_ctx(ctx):
+            result = create_conditional_order("0xtok1", "100", "invalid_type", 0.45, 25.0)
+        assert "error" in result
+
+    def test_trailing_stop_requires_trail_percent(self) -> None:
+        ctx = _make_ctx_with_db()
+        with _patch_ctx(ctx):
+            result = create_conditional_order("0xtok1", "100", "trailing_stop", 0.60, 25.0)
+        assert "trail_percent" in result["error"]
+
+    def test_rejects_zero_size(self) -> None:
+        ctx = _make_ctx_with_db()
+        with _patch_ctx(ctx):
+            result = create_conditional_order("0xtok1", "100", "stop_loss", 0.45, 0.0)
+        assert "error" in result
+
+
+# ------------------------------------------------------------------
+# Monitoring MCP tools
+# ------------------------------------------------------------------
+
+
+class TestGetSignalLog:
+    def test_returns_empty(self) -> None:
+        ctx = _make_ctx_with_db()
+        ctx.orchestrator.db.get_signal_log.return_value = []
+        with _patch_ctx(ctx):
+            result = get_signal_log()
+        assert result == []
+
+    def test_returns_entries(self) -> None:
+        ctx = _make_ctx_with_db()
+        ctx.orchestrator.db.get_signal_log.return_value = [
+            {"id": 1, "strategy": "test", "market_id": "m1", "token_id": "t1",
+             "side": "buy", "confidence": 0.8, "size": 25.0, "status": "generated",
+             "timestamp": "2026-01-01T00:00:00"},
+        ]
+        with _patch_ctx(ctx):
+            result = get_signal_log()
+        assert len(result) == 1
+        assert result[0]["strategy"] == "test"
+
+
+class TestGetPortfolioSnapshots:
+    def test_returns_empty(self) -> None:
+        ctx = _make_ctx_with_db()
+        ctx.orchestrator.db.get_portfolio_snapshots.return_value = []
+        with _patch_ctx(ctx):
+            result = get_portfolio_snapshots()
+        assert result == []
+
+    def test_returns_snapshots(self) -> None:
+        ctx = _make_ctx_with_db()
+        ctx.orchestrator.db.get_portfolio_snapshots.return_value = [
+            {"id": 1, "balance": 1000.0, "total_value": 1050.0,
+             "positions_json": "{}", "timestamp": "2026-01-01T00:00:00"},
+        ]
+        with _patch_ctx(ctx):
+            result = get_portfolio_snapshots()
+        assert len(result) == 1
+        assert result[0]["balance"] == 1000.0
+
+
+class TestGetStrategyPerformance:
+    def test_empty_data(self) -> None:
+        ctx = _make_ctx_with_db()
+        ctx.orchestrator.db.get_signal_log.return_value = []
+        ctx.orchestrator.db.get_trades.return_value = []
+        with _patch_ctx(ctx):
+            result = get_strategy_performance()
+        assert result == {}
+
+    def test_aggregates_signals_and_trades(self) -> None:
+        ctx = _make_ctx_with_db()
+        ctx.orchestrator.db.get_signal_log.return_value = [
+            {"strategy": "signal_trader", "status": "generated"},
+            {"strategy": "signal_trader", "status": "executed"},
+            {"strategy": "arb", "status": "generated"},
+        ]
+        ctx.orchestrator.db.get_trades.return_value = [
+            {"strategy": "signal_trader", "size": 25.0},
+            {"strategy": "signal_trader", "size": 30.0},
+        ]
+        with _patch_ctx(ctx):
+            result = get_strategy_performance()
+        assert result["signal_trader"]["signals_generated"] == 2
+        assert result["signal_trader"]["signals_executed"] == 1
+        assert result["signal_trader"]["trade_volume"] == 55.0
+        assert result["arb"]["signals_generated"] == 1
+        assert result["arb"]["signals_executed"] == 0

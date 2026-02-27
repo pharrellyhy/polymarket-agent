@@ -309,18 +309,15 @@ poetry/core/*
 # ============================================================================
 
 # Docker
-.dockerignore
 docker-compose.override.yml
 
 # CI/CD
-.github/
 .gitlab-ci.yml
 .travis.yml
 .circleci/
 
 # Deployment
 /releases/*
-deploy/
 deployment/
 
 # ============================================================================

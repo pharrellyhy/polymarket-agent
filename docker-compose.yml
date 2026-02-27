@@ -1,0 +1,12 @@
+services:
+  agent:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - agent-data:/data
+      - ./config.yaml:/app/config.yaml:ro
+    command: ["run", "--db", "/data/polymarket_agent.db"]
+
+volumes:
+  agent-data:

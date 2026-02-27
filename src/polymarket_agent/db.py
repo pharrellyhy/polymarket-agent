@@ -4,6 +4,8 @@ import sqlite3
 from dataclasses import astuple, dataclass
 from pathlib import Path
 
+from polymarket_agent.orders import ConditionalOrder, OrderStatus, OrderType
+
 
 @dataclass
 class Trade:
@@ -22,7 +24,7 @@ class Database:
     """SQLite database for persisting trades and portfolio state."""
 
     def __init__(self, path: Path) -> None:
-        self._conn = sqlite3.connect(str(path))
+        self._conn = sqlite3.connect(str(path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._create_tables()
 
@@ -40,7 +42,50 @@ class Database:
                 reason TEXT NOT NULL
             )
         """)
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS signal_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                strategy TEXT NOT NULL,
+                market_id TEXT NOT NULL,
+                token_id TEXT NOT NULL,
+                side TEXT NOT NULL,
+                confidence REAL NOT NULL,
+                size REAL NOT NULL,
+                status TEXT NOT NULL DEFAULT 'generated'
+            )
+        """)
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS portfolio_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                balance REAL NOT NULL,
+                total_value REAL NOT NULL,
+                positions_json TEXT NOT NULL DEFAULT '{}'
+            )
+        """)
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS conditional_orders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                triggered_at DATETIME,
+                token_id TEXT NOT NULL,
+                market_id TEXT NOT NULL,
+                order_type TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active',
+                trigger_price REAL NOT NULL,
+                size REAL NOT NULL,
+                high_watermark REAL,
+                trail_percent REAL,
+                parent_strategy TEXT NOT NULL,
+                reason TEXT NOT NULL
+            )
+        """)
         self._conn.commit()
+
+    # ------------------------------------------------------------------
+    # Trade methods
+    # ------------------------------------------------------------------
 
     def record_trade(self, trade: Trade) -> None:
         """Insert a trade record into the database."""
@@ -61,6 +106,157 @@ class Database:
         query += " ORDER BY timestamp DESC"
         rows = self._conn.execute(query, params).fetchall()
         return [dict(row) for row in rows]
+
+    # ------------------------------------------------------------------
+    # Signal log methods
+    # ------------------------------------------------------------------
+
+    def record_signal(
+        self,
+        *,
+        strategy: str,
+        market_id: str,
+        token_id: str,
+        side: str,
+        confidence: float,
+        size: float,
+        status: str = "generated",
+    ) -> None:
+        """Record a signal event in the signal log."""
+        self._conn.execute(
+            "INSERT INTO signal_log (strategy, market_id, token_id, side, confidence, size, status)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (strategy, market_id, token_id, side, confidence, size, status),
+        )
+        self._conn.commit()
+
+    def get_signal_log(self, *, strategy: str | None = None, limit: int = 100) -> list[dict[str, object]]:
+        """Retrieve signal log entries, optionally filtered by strategy."""
+        query = "SELECT * FROM signal_log"
+        params: tuple[str | int, ...] = ()
+        if strategy:
+            query += " WHERE strategy = ?"
+            params = (strategy,)
+        query += " ORDER BY id DESC LIMIT ?"
+        params = (*params, limit)
+        rows = self._conn.execute(query, params).fetchall()
+        return [dict(row) for row in rows]
+
+    # ------------------------------------------------------------------
+    # Portfolio snapshot methods
+    # ------------------------------------------------------------------
+
+    def record_portfolio_snapshot(
+        self,
+        *,
+        balance: float,
+        total_value: float,
+        positions_json: str = "{}",
+    ) -> None:
+        """Record a portfolio snapshot."""
+        self._conn.execute(
+            "INSERT INTO portfolio_snapshots (balance, total_value, positions_json) VALUES (?, ?, ?)",
+            (balance, total_value, positions_json),
+        )
+        self._conn.commit()
+
+    def get_portfolio_snapshots(self, *, limit: int = 100) -> list[dict[str, object]]:
+        """Retrieve portfolio snapshots, most recent first."""
+        rows = self._conn.execute(
+            "SELECT * FROM portfolio_snapshots ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    # ------------------------------------------------------------------
+    # Conditional order methods
+    # ------------------------------------------------------------------
+
+    def create_conditional_order(
+        self,
+        *,
+        token_id: str,
+        market_id: str,
+        order_type: OrderType,
+        trigger_price: float,
+        size: float,
+        parent_strategy: str,
+        reason: str,
+        high_watermark: float | None = None,
+        trail_percent: float | None = None,
+    ) -> int:
+        """Insert a new conditional order and return its ID."""
+        cursor = self._conn.execute(
+            "INSERT INTO conditional_orders"
+            " (token_id, market_id, order_type, trigger_price, size, high_watermark,"
+            "  trail_percent, parent_strategy, reason)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                token_id,
+                market_id,
+                order_type.value,
+                trigger_price,
+                size,
+                high_watermark,
+                trail_percent,
+                parent_strategy,
+                reason,
+            ),
+        )
+        self._conn.commit()
+        return cursor.lastrowid or 0
+
+    def get_active_conditional_orders(self) -> list[ConditionalOrder]:
+        """Return all conditional orders with status='active'."""
+        rows = self._conn.execute(
+            "SELECT * FROM conditional_orders WHERE status = 'active' ORDER BY created_at"
+        ).fetchall()
+        return [self._row_to_conditional_order(row) for row in rows]
+
+    def update_conditional_order(self, order_id: int, *, status: OrderStatus) -> None:
+        """Update a conditional order's status (and set triggered_at if triggered)."""
+        if status == OrderStatus.TRIGGERED:
+            self._conn.execute(
+                "UPDATE conditional_orders SET status = ?, triggered_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (status.value, order_id),
+            )
+        else:
+            self._conn.execute(
+                "UPDATE conditional_orders SET status = ? WHERE id = ?",
+                (status.value, order_id),
+            )
+        self._conn.commit()
+
+    def update_high_watermark(self, order_id: int, high_watermark: float) -> None:
+        """Update the high watermark for a trailing stop order."""
+        self._conn.execute(
+            "UPDATE conditional_orders SET high_watermark = ? WHERE id = ?",
+            (high_watermark, order_id),
+        )
+        self._conn.commit()
+
+    @staticmethod
+    def _row_to_conditional_order(row: sqlite3.Row) -> ConditionalOrder:
+        """Convert a DB row to a ConditionalOrder dataclass."""
+        return ConditionalOrder(
+            id=row["id"],
+            token_id=row["token_id"],
+            market_id=row["market_id"],
+            order_type=OrderType(row["order_type"]),
+            status=OrderStatus(row["status"]),
+            trigger_price=row["trigger_price"],
+            size=row["size"],
+            high_watermark=row["high_watermark"],
+            trail_percent=row["trail_percent"],
+            parent_strategy=row["parent_strategy"],
+            reason=row["reason"],
+            created_at=row["created_at"] or "",
+            triggered_at=row["triggered_at"],
+        )
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
 
     def close(self) -> None:
         """Close the database connection."""

@@ -1,13 +1,18 @@
 """AIAnalyst strategy — uses Claude to estimate market probabilities."""
 
+from __future__ import annotations
+
 import logging
 import os
 import re
 import time
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from polymarket_agent.data.models import Market
 from polymarket_agent.strategies.base import Signal, Strategy
+
+if TYPE_CHECKING:
+    from polymarket_agent.data.provider import DataProvider
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +70,7 @@ class AIAnalyst(Strategy):
         self._min_divergence = float(config.get("min_divergence", _DEFAULT_MIN_DIVERGENCE))
         self._order_size = float(config.get("order_size", _DEFAULT_ORDER_SIZE))
 
-    def analyze(self, markets: list[Market], data: Any) -> list[Signal]:
+    def analyze(self, markets: list[Market], data: DataProvider) -> list[Signal]:
         if self._client is None:
             return []
 

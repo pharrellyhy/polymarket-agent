@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Polymarket Agent Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f1117; color: #e1e4e8; padding: 24px; }
+  h1 { font-size: 1.5rem; margin-bottom: 8px; }
+  .subtitle { color: #8b949e; margin-bottom: 24px; font-size: 0.9rem; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 24px; }
+  .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; }
+  .card-label { color: #8b949e; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; }
+  .card-value { font-size: 1.6rem; font-weight: 600; margin-top: 4px; }
+  .positive { color: #3fb950; }
+  .negative { color: #f85149; }
+  .section { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; margin-bottom: 24px; }
+  .section h2 { font-size: 1.1rem; margin-bottom: 12px; }
+  canvas { width: 100% !important; max-height: 300px; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  th { text-align: left; padding: 8px; color: #8b949e; border-bottom: 1px solid #30363d; }
+  td { padding: 8px; border-bottom: 1px solid #21262d; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 0.75rem; font-weight: 600; }
+  .badge-buy { background: rgba(63, 185, 80, 0.15); color: #3fb950; }
+  .badge-sell { background: rgba(248, 81, 73, 0.15); color: #f85149; }
+  #status { font-size: 0.8rem; color: #8b949e; text-align: right; margin-bottom: 8px; }
+</style>
+</head>
+<body>
+
+<h1>Polymarket Agent</h1>
+<p class="subtitle">Monitoring Dashboard</p>
+<p id="status">Loading...</p>
+
+<div class="grid">
+  <div class="card"><div class="card-label">Balance</div><div class="card-value" id="balance">--</div></div>
+  <div class="card"><div class="card-label">Total Value</div><div class="card-value" id="total-value">--</div></div>
+  <div class="card"><div class="card-label">Positions</div><div class="card-value" id="positions">--</div></div>
+  <div class="card"><div class="card-label">Signals (24h)</div><div class="card-value" id="signal-count">--</div></div>
+</div>
+
+<div class="section">
+  <h2>Portfolio Value</h2>
+  <canvas id="pnl-chart"></canvas>
+</div>
+
+<div class="section">
+  <h2>Recent Trades</h2>
+  <table>
+    <thead><tr><th>Time</th><th>Strategy</th><th>Market</th><th>Side</th><th>Price</th><th>Size</th></tr></thead>
+    <tbody id="trades-body"></tbody>
+  </table>
+</div>
+
+<div class="section">
+  <h2>Recent Signals</h2>
+  <table>
+    <thead><tr><th>Time</th><th>Strategy</th><th>Market</th><th>Side</th><th>Confidence</th><th>Status</th></tr></thead>
+    <tbody id="signals-body"></tbody>
+  </table>
+</div>
+
+<script>
+let pnlChart = null;
+
+async function fetchJSON(url) {
+  const res = await fetch(url);
+  return res.json();
+}
+
+function fmt(n) {
+  return '$' + Number(n).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+}
+
+async function refresh() {
+  try {
+    const [portfolio, trades, signals, snapshots] = await Promise.all([
+      fetchJSON('/api/portfolio'),
+      fetchJSON('/api/trades?limit=20'),
+      fetchJSON('/api/signals?limit=20'),
+      fetchJSON('/api/snapshots?limit=50'),
+    ]);
+
+    document.getElementById('balance').textContent = fmt(portfolio.balance);
+    document.getElementById('total-value').textContent = fmt(portfolio.total_value);
+    document.getElementById('positions').textContent = Object.keys(portfolio.positions || {}).length;
+    document.getElementById('signal-count').textContent = signals.length;
+
+    // Trades table
+    const tbody = document.getElementById('trades-body');
+    tbody.innerHTML = trades.map(t =>
+      `<tr><td>${t.timestamp || '--'}</td><td>${t.strategy}</td><td>${(t.market_id || '').slice(0, 12)}...</td>` +
+      `<td><span class="badge badge-${t.side}">${t.side}</span></td>` +
+      `<td>${Number(t.price).toFixed(4)}</td><td>${fmt(t.size)}</td></tr>`
+    ).join('');
+
+    // Signals table
+    const sbody = document.getElementById('signals-body');
+    sbody.innerHTML = signals.map(s =>
+      `<tr><td>${s.timestamp || '--'}</td><td>${s.strategy}</td><td>${(s.market_id || '').slice(0, 12)}...</td>` +
+      `<td><span class="badge badge-${s.side}">${s.side}</span></td>` +
+      `<td>${Number(s.confidence).toFixed(2)}</td><td>${s.status}</td></tr>`
+    ).join('');
+
+    // P&L chart
+    const sorted = snapshots.slice().reverse();
+    const labels = sorted.map(s => s.timestamp ? s.timestamp.split('T')[0] : '');
+    const values = sorted.map(s => Number(s.total_value));
+
+    if (pnlChart) {
+      pnlChart.data.labels = labels;
+      pnlChart.data.datasets[0].data = values;
+      pnlChart.update();
+    } else {
+      const ctx = document.getElementById('pnl-chart').getContext('2d');
+      pnlChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: labels,
+          datasets: [{
+            label: 'Total Value',
+            data: values,
+            borderColor: '#58a6ff',
+            backgroundColor: 'rgba(88, 166, 255, 0.1)',
+            fill: true,
+            tension: 0.3,
+            pointRadius: 2,
+          }]
+        },
+        options: {
+          responsive: true,
+          plugins: { legend: { display: false } },
+          scales: {
+            x: { ticks: { color: '#8b949e' }, grid: { color: '#21262d' } },
+            y: { ticks: { color: '#8b949e', callback: v => '$' + v }, grid: { color: '#21262d' } },
+          }
+        }
+      });
+    }
+
+    document.getElementById('status').textContent = 'Last updated: ' + new Date().toLocaleTimeString();
+  } catch (e) {
+    document.getElementById('status').textContent = 'Error: ' + e.message;
+  }
+}
+
+refresh();
+setInterval(refresh, 15000);
+</script>
+</body>
+</html>

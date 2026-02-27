@@ -2,9 +2,22 @@
 
 from typer.testing import CliRunner
 
+from polymarket_agent import __version__
 from polymarket_agent.cli import app
 
 runner = CliRunner()
+
+
+def test_cli_version():
+    result = runner.invoke(app, ["--version"])
+    assert result.exit_code == 0
+    assert f"polymarket-agent {__version__}" in result.stdout
+
+
+def test_cli_version_short():
+    result = runner.invoke(app, ["-V"])
+    assert result.exit_code == 0
+    assert "polymarket-agent" in result.stdout
 
 
 def test_cli_help():

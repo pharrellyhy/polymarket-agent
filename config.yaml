@@ -31,3 +31,27 @@ risk:
   max_position_size: 100.0
   max_daily_loss: 50.0
   max_open_orders: 10
+
+conditional_orders:
+  enabled: false
+  default_stop_loss_pct: 0.10
+  default_take_profit_pct: 0.20
+  trailing_stop_enabled: false
+  trailing_stop_pct: 0.05
+
+position_sizing:
+  method: fixed
+  kelly_fraction: 0.25
+  max_bet_pct: 0.10
+
+backtest:
+  default_spread: 0.02
+  snapshot_interval: 86400
+
+monitoring:
+  structured_logging: false
+  log_file: null
+  alert_webhooks: []
+  snapshot_interval: 300
+  dashboard_host: "0.0.0.0"
+  dashboard_port: 8080

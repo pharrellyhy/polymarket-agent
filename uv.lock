@@ -616,6 +616,22 @@ wheels = [
 ]
 
 [[package]]
+name = "fastapi"
+version = "0.133.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "annotated-doc" },
+    { name = "pydantic" },
+    { name = "starlette" },
+    { name = "typing-extensions" },
+    { name = "typing-inspection" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/22/6f/0eafed8349eea1fa462238b54a624c8b408cd1ba2795c8e64aa6c34f8ab7/fastapi-0.133.1.tar.gz", hash = "sha256:ed152a45912f102592976fde6cbce7dae1a8a1053da94202e51dd35d184fadd6", size = 378741 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d2/c9/a175a7779f3599dfa4adfc97a6ce0e157237b3d7941538604aadaf97bfb6/fastapi-0.133.1-py3-none-any.whl", hash = "sha256:658f34ba334605b1617a65adf2ea6461901bdb9af3a3080d63ff791ecf7dc2e2", size = 109029 },
+]
+
+[[package]]
 name = "h11"
 version = "0.16.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1018,7 +1034,7 @@ wheels = [
 
 [[package]]
 name = "polymarket-agent"
-version = "0.1.0"
+version = "1.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
@@ -1029,6 +1045,10 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+dashboard = [
+    { name = "fastapi" },
+    { name = "uvicorn" },
+]
 live = [
     { name = "py-clob-client" },
 ]
@@ -1045,11 +1065,13 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "anthropic", specifier = ">=0.84.0" },
+    { name = "fastapi", marker = "extra == 'dashboard'", specifier = ">=0.110" },
     { name = "mcp", specifier = ">=1.0" },
     { name = "py-clob-client", marker = "extra == 'live'", specifier = ">=0.0.1" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "typer", specifier = ">=0.9" },
+    { name = "uvicorn", marker = "extra == 'dashboard'", specifier = ">=0.29" },
 ]
 
 [package.metadata.requires-dev]
