@@ -25,6 +25,14 @@
   .badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 0.75rem; font-weight: 600; }
   .badge-buy { background: rgba(63, 185, 80, 0.15); color: #3fb950; }
   .badge-sell { background: rgba(248, 81, 73, 0.15); color: #f85149; }
+  .badge-active { background: rgba(88, 166, 255, 0.15); color: #58a6ff; }
+  .badge-triggered { background: rgba(63, 185, 80, 0.15); color: #3fb950; }
+  .badge-cancelled { background: rgba(139, 148, 158, 0.15); color: #8b949e; }
+  .badge-stop_loss { background: rgba(248, 81, 73, 0.15); color: #f85149; }
+  .badge-take_profit { background: rgba(63, 185, 80, 0.15); color: #3fb950; }
+  .badge-trailing_stop { background: rgba(210, 153, 34, 0.15); color: #d29922; }
+  .diff-old { color: #f85149; text-decoration: line-through; }
+  .diff-new { color: #3fb950; }
   #status { font-size: 0.8rem; color: #8b949e; text-align: right; margin-bottom: 8px; }
 </style>
 </head>
@@ -47,6 +55,22 @@
 </div>
 
 <div class="section">
+  <h2>Open Positions</h2>
+  <table>
+    <thead><tr><th>Token</th><th>Shares</th><th>Entry Price</th><th>Current Price</th><th>Unrealized P&L</th><th>P&L %</th></tr></thead>
+    <tbody id="positions-body"></tbody>
+  </table>
+</div>
+
+<div class="section">
+  <h2>Strategy Performance</h2>
+  <table>
+    <thead><tr><th>Strategy</th><th>Trades</th><th>Win Rate</th><th>Net P&L</th><th>Signals</th></tr></thead>
+    <tbody id="strategy-body"></tbody>
+  </table>
+</div>
+
+<div class="section">
   <h2>Recent Trades</h2>
   <table>
     <thead><tr><th>Time</th><th>Strategy</th><th>Market</th><th>Side</th><th>Price</th><th>Size</th></tr></thead>
@@ -62,25 +86,68 @@
   </table>
 </div>
 
+<div class="section">
+  <h2>Conditional Orders</h2>
+  <table>
+    <thead><tr><th>Created</th><th>Type</th><th>Status</th><th>Market</th><th>Trigger Price</th><th>Size</th><th>Strategy</th><th>Triggered At</th></tr></thead>
+    <tbody id="orders-body"></tbody>
+  </table>
+</div>
+
+<div class="section">
+  <h2>Config Change History</h2>
+  <table>
+    <thead><tr><th>Time</th><th>Source</th><th>Changes</th></tr></thead>
+    <tbody id="config-body"></tbody>
+  </table>
+</div>
+
 <script>
 let pnlChart = null;
 
 async function fetchJSON(url) {
   const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error(`Request failed (${res.status}) for ${url}`);
+  }
   return res.json();
 }
 
+function toNum(value, fallback = 0) {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : fallback;
+}
+
 function fmt(n) {
-  return '$' + Number(n).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+  return '$' + toNum(n).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+}
+
+function fixed(n, digits) {
+  return toNum(n).toFixed(digits);
+}
+
+function shortId(value, width = 12) {
+  const text = String(value || '');
+  if (!text) return '--';
+  return text.length > width ? `${text.slice(0, width)}...` : text;
+}
+
+function renderRows(bodyId, rows, colspan, emptyText = 'No data') {
+  const body = document.getElementById(bodyId);
+  body.innerHTML = rows.length ? rows.join('') : `<tr><td colspan="${colspan}">${emptyText}</td></tr>`;
 }
 
 async function refresh() {
   try {
-    const [portfolio, trades, signals, snapshots] = await Promise.all([
+    const [portfolio, trades, signals, snapshots, positions, stratPerf, condOrders, configChanges] = await Promise.all([
       fetchJSON('/api/portfolio'),
       fetchJSON('/api/trades?limit=20'),
       fetchJSON('/api/signals?limit=20'),
       fetchJSON('/api/snapshots?limit=50'),
+      fetchJSON('/api/positions'),
+      fetchJSON('/api/strategy-performance'),
+      fetchJSON('/api/conditional-orders?limit=50'),
+      fetchJSON('/api/config-changes?limit=20'),
     ]);
 
     document.getElementById('balance').textContent = fmt(portfolio.balance);
@@ -89,25 +156,31 @@ async function refresh() {
     document.getElementById('signal-count').textContent = signals.length;
 
     // Trades table
-    const tbody = document.getElementById('trades-body');
-    tbody.innerHTML = trades.map(t =>
-      `<tr><td>${t.timestamp || '--'}</td><td>${t.strategy}</td><td>${(t.market_id || '').slice(0, 12)}...</td>` +
-      `<td><span class="badge badge-${t.side}">${t.side}</span></td>` +
-      `<td>${Number(t.price).toFixed(4)}</td><td>${fmt(t.size)}</td></tr>`
-    ).join('');
+    renderRows(
+      'trades-body',
+      trades.map(t =>
+        `<tr><td>${t.timestamp || '--'}</td><td>${t.strategy || '--'}</td><td>${shortId(t.market_id)}</td>` +
+        `<td><span class="badge badge-${t.side}">${t.side || '--'}</span></td>` +
+        `<td>${fixed(t.price, 4)}</td><td>${fmt(t.size)}</td></tr>`
+      ),
+      6
+    );
 
     // Signals table
-    const sbody = document.getElementById('signals-body');
-    sbody.innerHTML = signals.map(s =>
-      `<tr><td>${s.timestamp || '--'}</td><td>${s.strategy}</td><td>${(s.market_id || '').slice(0, 12)}...</td>` +
-      `<td><span class="badge badge-${s.side}">${s.side}</span></td>` +
-      `<td>${Number(s.confidence).toFixed(2)}</td><td>${s.status}</td></tr>`
-    ).join('');
+    renderRows(
+      'signals-body',
+      signals.map(s =>
+        `<tr><td>${s.timestamp || '--'}</td><td>${s.strategy || '--'}</td><td>${shortId(s.market_id)}</td>` +
+        `<td><span class="badge badge-${s.side}">${s.side || '--'}</span></td>` +
+        `<td>${fixed(s.confidence, 2)}</td><td>${s.status || '--'}</td></tr>`
+      ),
+      6
+    );
 
     // P&L chart
     const sorted = snapshots.slice().reverse();
-    const labels = sorted.map(s => s.timestamp ? s.timestamp.split('T')[0] : '');
-    const values = sorted.map(s => Number(s.total_value));
+    const labels = sorted.map(s => (s.timestamp ? String(s.timestamp).slice(0, 10) : ''));
+    const values = sorted.map(s => toNum(s.total_value));
 
     if (pnlChart) {
       pnlChart.data.labels = labels;
@@ -139,6 +212,63 @@ async function refresh() {
         }
       });
     }
+
+    // Positions table
+    renderRows(
+      'positions-body',
+      positions.map(p => {
+        const pnl = toNum(p.unrealized_pnl);
+        const cls = pnl >= 0 ? 'positive' : 'negative';
+        return `<tr><td>${shortId(p.token_id)}</td><td>${toNum(p.shares)}</td>` +
+          `<td>${fixed(p.avg_price, 4)}</td><td>${fixed(p.current_price, 4)}</td>` +
+          `<td class="${cls}">${fmt(pnl)}</td>` +
+          `<td class="${cls}">${fixed(p.unrealized_pnl_pct, 2)}%</td></tr>`;
+      }),
+      6
+    );
+
+    // Strategy performance table
+    renderRows(
+      'strategy-body',
+      stratPerf.map(s => {
+        const netPnl = toNum(s.net_pnl);
+        const cls = netPnl >= 0 ? 'positive' : 'negative';
+        return `<tr><td>${s.strategy || '--'}</td><td>${toNum(s.trade_count)}</td>` +
+          `<td>${fixed(s.win_rate, 1)}%</td>` +
+          `<td class="${cls}">${fmt(netPnl)}</td><td>${toNum(s.signal_count)}</td></tr>`;
+      }),
+      5
+    );
+
+    // Conditional orders table
+    renderRows(
+      'orders-body',
+      condOrders.map(o =>
+        `<tr><td>${o.created_at || '--'}</td>` +
+        `<td><span class="badge badge-${o.order_type || 'active'}">${o.order_type || '--'}</span></td>` +
+        `<td><span class="badge badge-${o.status || 'active'}">${o.status || '--'}</span></td>` +
+        `<td>${shortId(o.market_id)}</td>` +
+        `<td>${fixed(o.trigger_price, 4)}</td><td>${fmt(o.size)}</td>` +
+        `<td>${o.parent_strategy || '--'}</td><td>${o.triggered_at || '--'}</td></tr>`
+      ),
+      8
+    );
+
+    // Config change history table
+    renderRows(
+      'config-body',
+      configChanges.map(c => {
+        const diff = c.diff && typeof c.diff === 'object' ? c.diff : {};
+        const changes = Object.entries(diff).map(([path, delta]) => {
+          const oldValue = delta && typeof delta === 'object' ? delta.old : null;
+          const newValue = delta && typeof delta === 'object' ? delta.new : null;
+          return `<span class="diff-old">${path}: ${JSON.stringify(oldValue)}</span> → ` +
+            `<span class="diff-new">${JSON.stringify(newValue)}</span>`;
+        }).join('<br>');
+        return `<tr><td>${c.timestamp || '--'}</td><td>${c.changed_by || '--'}</td><td>${changes || 'No changes'}</td></tr>`;
+      }),
+      3
+    );
 
     document.getElementById('status').textContent = 'Last updated: ' + new Date().toLocaleTimeString();
   } catch (e) {

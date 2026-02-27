@@ -216,6 +216,14 @@ class Orchestrator:
             )
             return
 
+        diff = self._compute_config_diff(self._config, new_config)
+        if diff:
+            self._db.record_config_change(
+                changed_by="hot_reload",
+                diff_json=json.dumps(diff),
+                full_config_json=new_config.model_dump_json(),
+            )
+
         self._config = new_config
         self._strategies = self._load_strategies(new_config.strategies)
         self._sizer = PositionSizer(
@@ -366,6 +374,23 @@ class Orchestrator:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _compute_config_diff(old: AppConfig, new: AppConfig) -> dict[str, dict[str, Any]]:
+        """Recursively compare two configs, returning changed dotted paths."""
+        old_dict = old.model_dump()
+        new_dict = new.model_dump()
+        diff: dict[str, dict[str, Any]] = {}
+
+        def _walk(a: Any, b: Any, prefix: str) -> None:
+            if isinstance(a, dict) and isinstance(b, dict):
+                for key in a.keys() | b.keys():
+                    _walk(a.get(key), b.get(key), f"{prefix}.{key}" if prefix else key)
+            elif a != b:
+                diff[prefix] = {"old": a, "new": b}
+
+        _walk(old_dict, new_dict, "")
+        return diff
 
     @staticmethod
     def _build_executor(config: AppConfig, db: Database) -> Executor:

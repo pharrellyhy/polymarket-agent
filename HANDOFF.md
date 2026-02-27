@@ -4,6 +4,107 @@ Last updated: 2026-02-27
 
 ---
 
+## Session Entry — 2026-02-27 (Review Follow-Up: Dashboard HTML Simplification)
+
+### Problem
+- Follow-up review of the newly added dashboard UI code found repeated table-rendering logic and inconsistent handling of empty/malformed values in the browser layer.
+- The added sections worked, but repeated string-building patterns made maintenance harder and could surface `NaN`/blank fields in edge cases.
+
+### Solution
+- **Rendering helper extraction:** Added shared helpers in dashboard JS: `toNum()`, `fixed()`, `shortId()`, and `renderRows()` to remove repeated mapping boilerplate.
+- **Safer fetch path:** `fetchJSON()` now throws on non-2xx responses so the status banner reports request failures consistently.
+- **Defensive formatting:** Replaced direct `Number(...).toFixed(...)` usage with safe numeric helpers to avoid malformed-value display issues.
+- **Empty-state rows:** Table rendering now shows a stable “No data” row per section instead of a completely blank table body.
+
+### Edits
+- `src/polymarket_agent/dashboard/static/dashboard.html` — simplified table rendering and added defensive formatting/fetch helpers
+- `HANDOFF.md` — added this review follow-up entry; removed oldest session entry to keep last 10 entries
+
+### NOT Changed
+- No API endpoint changes, no DB changes, and no orchestrator changes in this follow-up.
+- No visual redesign; existing section layout and data semantics remain the same.
+
+### Verification
+```bash
+uv run python -m pytest tests/test_dashboard_api.py tests/test_config_reload.py -q   # 28 passed
+./.venv/bin/ruff check src/polymarket_agent/dashboard/api.py tests/test_dashboard_api.py tests/test_config_reload.py   # All checks passed
+```
+
+### Branch
+- Working branch: `main`
+
+---
+
+## Session Entry — 2026-02-27 (Review Follow-Up: Dashboard Strategy Stats Robustness)
+
+### Problem
+- Reviewed the newest dashboard additions (`/api/positions`, `/api/strategy-performance`, `/api/config-changes`, `/api/conditional-orders`) from the top handoff entry.
+- Found a robustness bug in `/api/strategy-performance`: non-numeric trade sizes (for example `None` or malformed strings) raised `ValueError` and returned a 500.
+- Found duplication in strategy stats aggregation (bucket initialization repeated in both trade and signal loops).
+
+### Solution
+- **TDD regression coverage first:** Added a failing test that exercises malformed trade sizes in `/api/strategy-performance`.
+- **Robust numeric parsing:** Added `_to_float(...)` helper and switched strategy/position math to use it.
+- **Simplified stats aggregation:** Added `StrategyStats` `TypedDict` and `_get_strategy_stats_bucket(...)` helper to remove duplicate initialization logic while keeping payload shape unchanged.
+- **Defensive side handling:** Only applies net P&L math to recognized `buy`/`sell` sides; unknown sides no longer skew totals.
+
+### Edits
+- `src/polymarket_agent/dashboard/api.py` — added `_to_float(...)`, `StrategyStats`, `_get_strategy_stats_bucket(...)`; simplified strategy aggregation and hardened numeric conversion
+- `tests/test_dashboard_api.py` — added regression test for malformed trade size handling in `/api/strategy-performance`
+- `HANDOFF.md` — added this review follow-up entry; removed oldest session entry to keep last 10 entries
+
+### NOT Changed
+- No DB schema changes, no orchestrator reload logic changes, and no dashboard HTML changes in this follow-up.
+- No changes to existing endpoint URLs or response field names.
+
+### Verification
+```bash
+uv run python -m pytest tests/test_dashboard_api.py tests/test_config_reload.py -q   # 28 passed
+./.venv/bin/ruff check src/polymarket_agent/dashboard/api.py tests/test_dashboard_api.py tests/test_config_reload.py   # All checks passed
+./.venv/bin/mypy src/polymarket_agent/dashboard/api.py   # Success: no issues found in 1 source file
+```
+
+### Branch
+- Working branch: `main`
+
+---
+
+## Session Entry — 2026-02-27 (Dashboard Enhancement: 4 New Sections)
+
+### Problem
+- The monitoring dashboard showed only basic stats (balance, total value, P&L chart, recent trades, recent signals). Missing per-position P&L, per-strategy performance, config change history, and conditional order status.
+
+### Solution
+- **DB layer (Step 1):** Added `config_changes` table to `_create_tables()` for storing config diffs. Added 3 new methods: `record_config_change()`, `get_config_changes()`, `get_all_conditional_orders()`.
+- **Orchestrator (Step 2):** Added `_compute_config_diff()` static method that recursively walks two AppConfig dicts and returns `{dotted_path: {old, new}}` for all differences. Modified `reload_config()` to persist non-empty diffs via `record_config_change()`.
+- **API (Step 3):** Added 4 new FastAPI endpoints: `/api/positions` (per-position P&L), `/api/strategy-performance` (trade/signal stats per strategy), `/api/config-changes` (diff history), `/api/conditional-orders` (all statuses).
+- **Dashboard HTML (Step 4):** Added 4 new sections with tables (Open Positions, Strategy Performance, Conditional Orders, Config Change History) plus CSS badge classes for order types/statuses and diff coloring. JS `refresh()` now fetches all 8 endpoints in parallel.
+- **Tests (Step 5):** 8 new dashboard API tests + 2 new config reload tests. All 288 tests pass.
+
+### Edits
+- `src/polymarket_agent/db.py` — added `config_changes` table, `record_config_change()`, `get_config_changes()`, `get_all_conditional_orders()`
+- `src/polymarket_agent/orchestrator.py` — added `_compute_config_diff()` static method; modified `reload_config()` to record diffs
+- `src/polymarket_agent/dashboard/api.py` — added 4 new endpoints: `/api/positions`, `/api/strategy-performance`, `/api/config-changes`, `/api/conditional-orders`
+- `src/polymarket_agent/dashboard/static/dashboard.html` — added 4 new HTML sections, CSS badge classes, JS rendering for all 4 sections
+- `tests/test_dashboard_api.py` — 8 new tests; updated mock portfolio to include `current_price`
+- `tests/test_config_reload.py` — 2 new tests for config diff recording
+
+### NOT Changed
+- No changes to strategy logic, MCP server, execution layer, or CLI commands.
+- No changes to existing API endpoints or their response shapes.
+
+### Verification
+```bash
+uv run pytest tests/test_dashboard_api.py tests/test_config_reload.py -v   # 27 passed
+uv run pytest tests/ -v                                                      # 288 passed
+uv run ruff check src/ tests/test_dashboard_api.py tests/test_config_reload.py  # All checks passed
+```
+
+### Branch
+- Working branch: `main`
+
+---
+
 ## Session Entry — 2026-02-27 (Review Follow-Up: Evaluate Helper Simplification)
 
 ### Problem
@@ -268,124 +369,6 @@ uv run mypy src/                  # Success: no issues found in 21 source files
 uv run pytest tests/test_client.py -q   # 16 passed
 uv run ruff check src/polymarket_agent/data/models.py src/polymarket_agent/data/client.py tests/test_client.py   # All checks passed
 uv run mypy src/polymarket_agent/data/models.py src/polymarket_agent/data/client.py   # Success: no issues found in 2 source files
-```
-
-### Branch
-- Working branch: `main`
-
----
-
-## Session Entry — 2026-02-26 (Data Layer Gap-Fill: 5 Missing Methods)
-
-### Problem
-- Original design doc listed 10 `PolymarketData` methods; only 7 were implemented through Phases 1–4.
-- Missing: `get_event(event_id)`, `get_price(token_id)`, `get_spread(token_id)`, `get_volume(event_id)`, `get_positions(address)`.
-- Missing models: `Spread`, `Volume`, `Position`.
-
-### Solution
-- **3 new Pydantic models:**
-  - `Spread(token_id, bid, ask, spread)` — bid-ask spread for a CLOB token. Two constructors: `from_cli()` (parses `clob spread` JSON) and `from_orderbook()` (derives bid/ask/spread from an OrderBook).
-  - `Volume(event_id, total)` — aggregated volume for an event. `from_cli()` parses the nested `[{"markets": [...], "total": "..."}]` response.
-  - `Position(market, outcome, shares, avg_price, current_price, pnl)` — open position for a wallet. `from_cli()` handles multiple field name conventions (e.g., `size`/`shares`, `avgPrice`/`avg_price`).
-- **5 new client methods:**
-  - `get_event(event_id)` → `Event | None` via `polymarket events get <id> -o json`
-  - `get_price(token_id)` → `Spread` derived from order book (bid, ask, spread)
-  - `get_spread(token_id)` → `Spread` via `polymarket clob spread <token_id> -o json`
-  - `get_volume(event_id)` → `Volume` via `polymarket data volume <id> -o json`
-  - `get_positions(address, limit)` → `list[Position]` via `polymarket data positions <addr> -o json`
-- **7 new tests:** get_event, get_event_not_found, get_spread, get_price, get_volume, get_positions, get_positions_empty.
-
-### Edits
-- `src/polymarket_agent/data/models.py` — added `Spread`, `Volume`, `Position` models with `from_cli()` constructors
-- `src/polymarket_agent/data/client.py` — added 5 new methods, updated imports
-- `tests/test_client.py` — added mock data and 7 new test functions, extended `_mock_run` dispatcher
-
-### NOT Changed
-- No changes to strategies, execution, orchestrator, MCP server, or CLI.
-- Existing models and methods untouched.
-- MCP server does not yet expose the new methods as tools (future enhancement).
-
-### Verification
-```bash
-uv run pytest tests/ -v           # 120 passed
-uv run ruff check src/            # All checks passed
-uv run mypy src/                  # Success: no issues found in 21 source files
-```
-
-### Branch
-- Working branch: `main`
-
----
-
-## Session Entry — 2026-02-26 (Phase 4 Follow-Up: Risk Gate Performance Optimization)
-
-### Problem
-- Previous follow-up review left a known performance risk: `tick()` called `_check_risk()` per signal, and `_check_risk()` recomputed daily loss (DB scan) and open-order count (executor/API call) each time.
-- In live mode this could cause repeated CLOB API calls and unnecessary DB work for a single tick with many signals.
-
-### Solution
-- **Per-tick risk snapshot:** Added a private `_RiskSnapshot` dataclass and `_build_risk_snapshot()` helper so `tick()` computes `daily_loss` and `open_orders` once at the start of execution.
-- **Snapshot reuse in order path:** `tick()` now passes the precomputed risk snapshot into `place_order(...)`, and `_check_risk(...)` consumes the snapshot instead of refetching DB/API state for each signal.
-- **Incremental snapshot updates:** After each accepted order in `tick()`, `_update_risk_snapshot_after_order()` updates the cached `daily_loss` (buy increases loss, sell reduces it) and increments open-order count in live mode.
-- **No behavior change for manual callers:** `Orchestrator.place_order()` still performs fresh risk checks when called without a snapshot (for example MCP manual trades).
-- **Regression coverage:** Added a test that verifies `tick()` only calls `_calculate_daily_loss()` and `get_open_orders()` once across a multi-signal batch.
-
-### Edits
-- `src/polymarket_agent/orchestrator.py` — added `_RiskSnapshot`, `_build_risk_snapshot()`, `_update_risk_snapshot_after_order()`, and optional snapshot reuse in `place_order()` / `_check_risk()`
-- `tests/test_risk_gate.py` — added per-tick risk snapshot reuse regression test
-- `HANDOFF.md` — added this follow-up entry
-
-### NOT Changed
-- No changes to risk limit thresholds/semantics (`max_position_size`, `max_daily_loss`, `max_open_orders`).
-- Snapshot open-order updates are intentionally conservative in live mode (increments after accepted order) rather than refetching from the API after each order.
-
-### Verification
-```bash
-uv run pytest tests/test_risk_gate.py -q                      # 9 passed
-uv run ruff check src/polymarket_agent/orchestrator.py tests/test_risk_gate.py   # All checks passed
-uv run mypy src/polymarket_agent/orchestrator.py              # Success: no issues found in 1 source file
-```
-
-### Branch
-- Working branch: `main`
-
----
-
-## Session Entry — 2026-02-26 (Phase 4 Follow-Up: Review + Safety Fixes)
-
-### Problem
-- Reviewed the newly added Phase 4 live-trading/risk-management changes from the top handoff entry.
-- Found correctness and safety gaps in the new code paths:
-  - `LiveTrader` used `Signal.size` (USDC) directly as CLOB limit-order `size` instead of share quantity.
-  - CLI live confirmation guard existed for `run` but could be bypassed via `tick`.
-  - `Orchestrator.place_order()` bypassed the new risk gate, so manual callers (including MCP manual trades) could skip risk checks.
-
-### Solution
-- **LiveTrader order size fix (High):** Converted limit-order `OrderArgs.size` to share quantity (`signal.size / signal.target_price`) so live orders align with the project-wide `Signal.size` = USDC convention. Added a guard rejecting non-positive prices before API calls.
-- **Risk gate centralization:** `Orchestrator.place_order()` now enforces monitor-mode and `_check_risk()` before delegating to the executor. `tick()` was simplified to reuse `place_order()` instead of duplicating risk logic in its execution loop.
-- **CLI live safety tightened:** `polymarket-agent tick` now requires the same explicit `--live` confirmation flag as `run` when `mode: live`. `run` also performs the flag check before constructing the orchestrator, so it no longer fails early on missing live credentials before showing the safety message.
-- **MCP lifecycle cleanup:** `mcp_server` lifespan now calls `orch.close()` in `finally`, ensuring DB/resources are released when the server shuts down.
-- **Tests strengthened:** Added/updated regression coverage for live order share conversion, non-positive live price rejection, orchestrator manual-order risk gating, and `tick --live` confirmation.
-
-### Edits
-- `src/polymarket_agent/execution/live.py` — fixed limit-order size units (USDC -> shares), added non-positive price guard
-- `src/polymarket_agent/orchestrator.py` — moved risk/mode checks into `place_order()` and simplified `tick()` to reuse it
-- `src/polymarket_agent/cli.py` — early `run --live` guard before orchestrator construction; added `tick --live` confirmation guard
-- `src/polymarket_agent/mcp_server.py` — added orchestrator cleanup in lifespan `finally`
-- `tests/test_live_trader.py` — asserted CLOB `OrderArgs.size` receives share quantity; added invalid-price regression test
-- `tests/test_risk_gate.py` — added manual `Orchestrator.place_order()` risk-gate regression test
-- `tests/test_cli.py` — strengthened `run --live` test and added `tick --live` confirmation test
-- `HANDOFF.md` — added this follow-up entry
-
-### NOT Changed
-- Did not refactor the risk gate performance path: `tick()` still recomputes daily loss / open orders per signal via `_check_risk()`, which may be expensive in live mode (DB scan + CLOB open-orders fetch each time).
-- No full test suite rerun (focused verification only for reviewed/changed Phase 4 + CLI/MCP files).
-
-### Verification
-```bash
-uv run pytest tests/test_live_trader.py tests/test_risk_gate.py tests/test_cli.py tests/test_mcp_server.py -q   # 44 passed
-uv run ruff check src/polymarket_agent/cli.py src/polymarket_agent/orchestrator.py src/polymarket_agent/execution/live.py src/polymarket_agent/mcp_server.py tests/test_live_trader.py tests/test_risk_gate.py tests/test_cli.py   # All checks passed
-uv run mypy src/polymarket_agent/cli.py src/polymarket_agent/orchestrator.py src/polymarket_agent/execution/live.py src/polymarket_agent/mcp_server.py   # Success: no issues found in 4 source files
 ```
 
 ### Branch

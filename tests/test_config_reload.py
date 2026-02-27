@@ -99,3 +99,37 @@ def test_reload_config_updates_poll_interval() -> None:
         orch.reload_config(new_config)
         assert orch.poll_interval == 120
         orch.close()
+
+
+def test_reload_config_records_change_to_db() -> None:
+    import json  # noqa: PLC0415
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = AppConfig(mode="paper", poll_interval=60)
+        orch = Orchestrator(config=config, db_path=Path(tmpdir) / "test.db")
+
+        new_config = AppConfig(mode="paper", poll_interval=120)
+        orch.reload_config(new_config)
+
+        changes = orch.db.get_config_changes(limit=10)
+        assert len(changes) == 1
+        assert changes[0]["changed_by"] == "hot_reload"
+        diff = json.loads(str(changes[0]["diff_json"]))
+        assert "poll_interval" in diff
+        assert diff["poll_interval"]["old"] == 60
+        assert diff["poll_interval"]["new"] == 120
+        orch.close()
+
+
+def test_reload_config_no_record_when_no_diff() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = AppConfig(mode="paper", starting_balance=1000.0)
+        orch = Orchestrator(config=config, db_path=Path(tmpdir) / "test.db")
+
+        # Reload with identical config — should not persist any change
+        same_config = AppConfig(mode="paper", starting_balance=1000.0)
+        orch.reload_config(same_config)
+
+        changes = orch.db.get_config_changes(limit=10)
+        assert len(changes) == 0
+        orch.close()

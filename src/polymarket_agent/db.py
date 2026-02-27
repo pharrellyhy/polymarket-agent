@@ -81,6 +81,15 @@ class Database:
                 reason TEXT NOT NULL
             )
         """)
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS config_changes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                changed_by TEXT NOT NULL DEFAULT 'hot_reload',
+                diff_json TEXT NOT NULL,
+                full_config_json TEXT NOT NULL
+            )
+        """)
         self._conn.commit()
 
     # ------------------------------------------------------------------
@@ -287,6 +296,30 @@ class Database:
             created_at=row["created_at"] or "",
             triggered_at=row["triggered_at"],
         )
+
+    # ------------------------------------------------------------------
+    # Config change methods
+    # ------------------------------------------------------------------
+
+    def record_config_change(self, changed_by: str, diff_json: str, full_config_json: str) -> None:
+        """Insert a config change record."""
+        self._conn.execute(
+            "INSERT INTO config_changes (changed_by, diff_json, full_config_json) VALUES (?, ?, ?)",
+            (changed_by, diff_json, full_config_json),
+        )
+        self._conn.commit()
+
+    def get_config_changes(self, limit: int = 50) -> list[dict[str, object]]:
+        """Retrieve config changes, most recent first."""
+        rows = self._conn.execute("SELECT * FROM config_changes ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_all_conditional_orders(self, limit: int = 100) -> list[dict[str, object]]:
+        """Retrieve all conditional orders (all statuses), most recent first."""
+        rows = self._conn.execute(
+            "SELECT * FROM conditional_orders ORDER BY created_at DESC LIMIT ?", (limit,)
+        ).fetchall()
+        return [dict(row) for row in rows]
 
     # ------------------------------------------------------------------
     # Lifecycle
