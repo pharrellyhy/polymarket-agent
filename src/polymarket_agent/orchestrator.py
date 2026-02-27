@@ -20,6 +20,7 @@ from polymarket_agent.strategies.aggregator import aggregate_signals
 from polymarket_agent.strategies.ai_analyst import AIAnalyst
 from polymarket_agent.strategies.arbitrageur import Arbitrageur
 from polymarket_agent.strategies.base import Signal, Strategy
+from polymarket_agent.strategies.exit_manager import ExitManager
 from polymarket_agent.strategies.market_maker import MarketMaker
 from polymarket_agent.strategies.signal_trader import SignalTrader
 
@@ -61,6 +62,7 @@ class Orchestrator:
         self._db = Database(db_path)
         self._executor = self._build_executor(config, self._db)
         self._strategies = self._load_strategies(config.strategies)
+        self._exit_manager = ExitManager(config.exit_manager)
         self._sizer = PositionSizer(
             method=config.position_sizing.method,
             kelly_fraction=config.position_sizing.kelly_fraction,
@@ -107,8 +109,29 @@ class Orchestrator:
         for signal in signals:
             self._record_signal(signal, status="generated")
 
+        # Run exit manager on held positions
+        exit_signals: list[Signal] = []
+        if self._config.exit_manager.enabled and self._config.mode != "monitor":
+            exit_signals = self._evaluate_exits()
+            if exit_signals:
+                logger.info("ExitManager generated %d sell signal(s)", len(exit_signals))
+
         trades_executed = 0
         if self._config.mode != "monitor":
+            # Execute exit signals first (bypass risk gate and position sizing)
+            for signal in exit_signals:
+                order = self._executor.place_order(signal)
+                if order is not None:
+                    trades_executed += 1
+                    self._record_signal(signal, status="executed")
+                    self._alerts.alert(
+                        f"Exit trade: {signal.side} {signal.size:.2f} USDC "
+                        f"on {signal.market_id} ({signal.reason})"
+                    )
+                else:
+                    self._record_signal(signal, status="rejected")
+
+            # Execute entry signals through normal risk/sizing pipeline
             risk_snapshot = self._build_risk_snapshot()
             for signal in signals:
                 sized_signal = self._apply_position_sizing(signal)
@@ -232,6 +255,7 @@ class Orchestrator:
             max_bet_pct=new_config.position_sizing.max_bet_pct,
         )
         self._alerts = self._build_alert_manager(new_config)
+        self._exit_manager = ExitManager(new_config.exit_manager)
         self._snapshot_interval = new_config.monitoring.snapshot_interval
         logger.info("[reload] Config updated — %d strategies active", len(self._strategies))
 
@@ -374,6 +398,22 @@ class Orchestrator:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _evaluate_exits(self) -> list[Signal]:
+        """Fetch current prices for held positions and run the exit manager."""
+        portfolio = self.get_portfolio()
+        if not portfolio.positions:
+            return []
+
+        current_prices: dict[str, float] = {}
+        for token_id in portfolio.positions:
+            try:
+                spread = self._data.get_price(token_id)
+                current_prices[token_id] = spread.bid
+            except Exception:
+                logger.debug("Failed to fetch price for %s, skipping exit check", token_id)
+
+        return self._exit_manager.evaluate(portfolio.positions, current_prices)
 
     @staticmethod
     def _compute_config_diff(old: AppConfig, new: AppConfig) -> dict[str, dict[str, Any]]:
