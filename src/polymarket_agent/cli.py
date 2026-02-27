@@ -1,7 +1,9 @@
 """CLI entry point for polymarket-agent."""
 
+import json as _json
 import logging
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated
 
@@ -103,6 +105,8 @@ def status(
     db: DbOption = DEFAULT_DB,
 ) -> None:
     """Show current portfolio and recent trades."""
+    from polymarket_agent.data.client import PolymarketData  # noqa: PLC0415
+
     cfg, orch = _build_orchestrator(config, db)
     try:
         portfolio = orch.get_portfolio()
@@ -110,6 +114,37 @@ def status(
         typer.echo(f"Balance: ${portfolio.balance:.2f}")
         typer.echo(f"Total Value: ${portfolio.total_value:.2f}")
         typer.echo(f"Positions: {len(portfolio.positions)}")
+
+        if portfolio.positions:
+            data = PolymarketData()
+            typer.echo(f"\n  {'TOKEN':<14} {'SHARES':>8} {'ENTRY':>8} {'CURRENT':>8} {'P&L':>10} {'P&L%':>8}")
+            total_unrealized = 0.0
+            for token_id, pos in portfolio.positions.items():
+                shares = float(str(pos.get("shares", 0)))
+                avg_price = float(str(pos.get("avg_price", 0)))
+                if shares <= 0:
+                    continue
+                try:
+                    spread = data.get_price(token_id)
+                    current = spread.bid
+                except Exception:
+                    current = avg_price
+                cost = shares * avg_price
+                value = shares * current
+                pnl = value - cost
+                pnl_pct = (pnl / cost * 100) if cost > 0 else 0.0
+                total_unrealized += pnl
+                sign = "+" if pnl >= 0 else ""
+                typer.echo(
+                    f"  {token_id[:12]:<14} "
+                    f"{shares:>8.2f} "
+                    f"${avg_price:>7.4f} "
+                    f"${current:>7.4f} "
+                    f"{sign}${pnl:>8.2f} "
+                    f"{sign}{pnl_pct:>6.1f}%"
+                )
+            sign = "+" if total_unrealized >= 0 else ""
+            typer.echo(f"\n  Total Unrealized P&L: {sign}${total_unrealized:,.2f}")
     finally:
         orch.close()
 
@@ -151,8 +186,6 @@ def backtest(
     trades: Annotated[bool, typer.Option("--trades", help="Include individual trades in output")] = False,
 ) -> None:
     """Run a backtest over historical CSV data."""
-    import json as _json  # noqa: PLC0415
-
     from polymarket_agent.backtest.engine import BacktestEngine  # noqa: PLC0415
     from polymarket_agent.backtest.historical import HistoricalDataProvider  # noqa: PLC0415
 
@@ -200,6 +233,193 @@ def backtest(
             payload["trades"] = result.trades
         output.write_text(_json.dumps(payload, indent=2, default=str))
         typer.echo(f"Results written to {output}")
+
+
+def _parse_period(period: str) -> datetime:
+    """Parse a period string like '24h', '7d', '30m' into a UTC cutoff datetime."""
+    unit = period[-1].lower()
+    try:
+        value = int(period[:-1])
+    except ValueError:
+        raise typer.BadParameter(f"Invalid period format: {period!r} (expected e.g. '24h', '7d')") from None
+    if unit == "h":
+        delta = timedelta(hours=value)
+    elif unit == "d":
+        delta = timedelta(days=value)
+    elif unit == "m":
+        delta = timedelta(minutes=value)
+    else:
+        raise typer.BadParameter(f"Unknown period unit: {unit!r} (expected h, d, or m)")
+    return datetime.now(timezone.utc) - delta
+
+
+@app.command()
+def report(
+    config: ConfigOption = DEFAULT_CONFIG,
+    db: DbOption = DEFAULT_DB,
+    period: Annotated[str | None, typer.Option("--period", "-p", help="Time period filter (e.g. 24h, 7d)")] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
+) -> None:
+    """Show performance report with P&L metrics."""
+    from polymarket_agent.backtest.metrics import PortfolioSnapshot, compute_metrics  # noqa: PLC0415
+    from polymarket_agent.data.client import PolymarketData  # noqa: PLC0415
+
+    cfg, orch = _build_orchestrator(config, db)
+    try:
+        since: str | None = None
+        period_label = "all time"
+        if period:
+            cutoff = _parse_period(period)
+            since = cutoff.strftime("%Y-%m-%d %H:%M:%S")
+            period_label = f"last {period}"
+
+        trades = orch.db.get_trades(since=since)
+        snapshot_rows = orch.db.get_portfolio_snapshots(limit=10000, since=since)
+        snapshot_rows.reverse()  # chronological order for metrics
+
+        snapshots = [
+            PortfolioSnapshot(
+                timestamp=str(s.get("timestamp", "")),
+                balance=float(str(s.get("balance", 0))),
+                total_value=float(str(s.get("total_value", 0))),
+            )
+            for s in snapshot_rows
+        ]
+
+        metrics = compute_metrics(trades, snapshots, cfg.starting_balance)
+
+        # Get latest snapshot for position recovery
+        latest = orch.db.get_latest_snapshot()
+        positions: dict[str, dict[str, object]] = {}
+        if latest:
+            try:
+                raw = _json.loads(str(latest.get("positions_json", "{}")))
+                if isinstance(raw, dict):
+                    positions = raw
+            except (ValueError, TypeError):
+                pass
+
+        # Fetch current prices for open positions
+        data = PolymarketData()
+        position_rows: list[dict[str, object]] = []
+        total_unrealized = 0.0
+        for token_id, pos in positions.items():
+            shares = float(str(pos.get("shares", 0)))
+            avg_price = float(str(pos.get("avg_price", 0)))
+            if shares <= 0:
+                continue
+            try:
+                spread = data.get_price(token_id)
+                current = spread.bid
+            except Exception:
+                current = avg_price
+            cost = shares * avg_price
+            value = shares * current
+            pnl = value - cost
+            pnl_pct = (pnl / cost * 100) if cost > 0 else 0.0
+            total_unrealized += pnl
+            position_rows.append(
+                {
+                    "token_id": token_id[:12],
+                    "entry": avg_price,
+                    "current": current,
+                    "shares": shares,
+                    "pnl": pnl,
+                    "pnl_pct": pnl_pct,
+                }
+            )
+
+        # Per-strategy breakdown
+        strategy_stats: dict[str, dict[str, float | int]] = {}
+        for t in trades:
+            strat = str(t.get("strategy", "unknown"))
+            if strat not in strategy_stats:
+                strategy_stats[strat] = {"count": 0, "net": 0.0}
+            strategy_stats[strat]["count"] = int(strategy_stats[strat]["count"]) + 1
+            size = float(str(t.get("size", 0)))
+            if t.get("side") == "sell":
+                strategy_stats[strat]["net"] = float(strategy_stats[strat]["net"]) + size
+            else:
+                strategy_stats[strat]["net"] = float(strategy_stats[strat]["net"]) - size
+
+        if json_output:
+            payload = {
+                "period": period_label,
+                "total_return": metrics.total_return,
+                "sharpe_ratio": metrics.sharpe_ratio,
+                "max_drawdown": metrics.max_drawdown,
+                "win_rate": metrics.win_rate,
+                "profit_factor": metrics.profit_factor,
+                "total_trades": metrics.total_trades,
+                "positions": position_rows,
+                "strategy_breakdown": strategy_stats,
+            }
+            typer.echo(_json.dumps(payload, indent=2, default=str))
+            return
+
+        # Portfolio summary from latest snapshot
+        balance = float(str(latest.get("balance", 0))) if latest else cfg.starting_balance
+        total_value = float(str(latest.get("total_value", 0))) if latest else cfg.starting_balance
+        pos_value = total_value - balance
+
+        typer.echo(f"\n=== Performance Report ({period_label}) ===\n")
+        typer.echo(f"Portfolio:  ${total_value:,.2f}  ({metrics.total_return:+.2%})")
+        typer.echo(f"Cash:       ${balance:,.2f}")
+        typer.echo(f"Positions:  ${pos_value:,.2f} ({len(position_rows)} open)\n")
+
+        typer.echo("Metrics:")
+        typer.echo(f"  Total Return:   {metrics.total_return:+.2%}")
+        typer.echo(f"  Max Drawdown:   {metrics.max_drawdown:.2%}")
+        typer.echo(f"  Sharpe Ratio:   {metrics.sharpe_ratio:.2f}")
+        round_trips = sum(1 for t in trades if t.get("side") == "sell")
+        typer.echo(f"  Win Rate:       {metrics.win_rate:.1%} ({round_trips} round-trips)")
+        typer.echo(f"  Profit Factor:  {metrics.profit_factor:.2f}")
+        typer.echo(f"  Total Trades:   {metrics.total_trades}\n")
+
+        if position_rows:
+            typer.echo("Open Positions:")
+            typer.echo(f"  {'TOKEN':<14} {'ENTRY':>8} {'CURRENT':>8} {'P&L':>10} {'P&L%':>8}")
+            for p in position_rows:
+                typer.echo(
+                    f"  {p['token_id']:<14} "
+                    f"${p['entry']:>7.4f} "
+                    f"${p['current']:>7.4f} "
+                    f"{'+' if float(str(p['pnl'])) >= 0 else ''}{float(str(p['pnl'])):>8.2f} "
+                    f"{'+' if float(str(p['pnl_pct'])) >= 0 else ''}{float(str(p['pnl_pct'])):>6.1f}%"
+                )
+            typer.echo(f"  Total Unrealized: ${total_unrealized:+,.2f}\n")
+
+        if strategy_stats:
+            typer.echo("Per-Strategy:")
+            for strat, stats in strategy_stats.items():
+                count = int(stats["count"])
+                net = float(stats["net"])
+                trade_word = "trade" if count == 1 else "trades"
+                typer.echo(f"  {strat}:  {count} {trade_word}, {'+' if net >= 0 else ''}${net:,.2f}")
+            typer.echo()
+
+        # Recent trades
+        recent = trades[:10]
+        if recent:
+            typer.echo("Recent Trades (last 10):")
+            typer.echo(f"  {'TIME':<20} {'SIDE':<5} {'MARKET':<14} {'PRICE':>8} {'SIZE':>10} {'STRATEGY'}")
+            for t in recent:
+                ts = str(t.get("timestamp", ""))
+                if len(ts) > 19:
+                    ts = ts[11:19]
+                elif len(ts) > 10:
+                    ts = ts[11:]
+                typer.echo(
+                    f"  {ts:<20} "
+                    f"{str(t.get('side', '')):>4} "
+                    f" {str(t.get('market_id', ''))[:12]:<14}"
+                    f"${float(str(t.get('price', 0))):>7.4f} "
+                    f"${float(str(t.get('size', 0))):>8.2f} "
+                    f" {str(t.get('strategy', ''))}"
+                )
+            typer.echo()
+    finally:
+        orch.close()
 
 
 @app.command()

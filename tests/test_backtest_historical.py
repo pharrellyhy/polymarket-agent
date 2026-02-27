@@ -4,7 +4,6 @@ import csv
 from pathlib import Path
 
 import pytest
-
 from polymarket_agent.backtest.historical import HistoricalDataProvider
 from polymarket_agent.data.models import Market, OrderBook, Spread
 

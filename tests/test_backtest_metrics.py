@@ -1,6 +1,5 @@
 """Tests for backtest performance metrics."""
 
-import math
 
 from polymarket_agent.backtest.metrics import BacktestMetrics, PortfolioSnapshot, compute_metrics
 

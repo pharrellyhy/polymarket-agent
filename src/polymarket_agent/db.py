@@ -96,13 +96,28 @@ class Database:
         )
         self._conn.commit()
 
-    def get_trades(self, strategy: str | None = None) -> list[dict[str, object]]:
-        """Retrieve trades, optionally filtered by strategy name."""
+    def get_trades(
+        self,
+        strategy: str | None = None,
+        since: str | None = None,
+    ) -> list[dict[str, object]]:
+        """Retrieve trades, optionally filtered by strategy name and/or time.
+
+        Args:
+            strategy: If provided, only return trades from this strategy.
+            since: If provided, only return trades with timestamp >= this ISO value.
+        """
         query = "SELECT * FROM trades"
-        params: tuple[str, ...] = ()
+        conditions: list[str] = []
+        params: list[str] = []
         if strategy:
-            query += " WHERE strategy = ?"
-            params = (strategy,)
+            conditions.append("strategy = ?")
+            params.append(strategy)
+        if since:
+            conditions.append("timestamp >= ?")
+            params.append(since)
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
         query += " ORDER BY timestamp DESC"
         rows = self._conn.execute(query, params).fetchall()
         return [dict(row) for row in rows]
@@ -160,13 +175,32 @@ class Database:
         )
         self._conn.commit()
 
-    def get_portfolio_snapshots(self, *, limit: int = 100) -> list[dict[str, object]]:
-        """Retrieve portfolio snapshots, most recent first."""
-        rows = self._conn.execute(
-            "SELECT * FROM portfolio_snapshots ORDER BY id DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
+    def get_portfolio_snapshots(
+        self,
+        *,
+        limit: int = 100,
+        since: str | None = None,
+    ) -> list[dict[str, object]]:
+        """Retrieve portfolio snapshots, most recent first.
+
+        Args:
+            limit: Maximum number of snapshots to return.
+            since: If provided, only return snapshots with timestamp >= this ISO value.
+        """
+        query = "SELECT * FROM portfolio_snapshots"
+        params: list[str | int] = []
+        if since:
+            query += " WHERE timestamp >= ?"
+            params.append(since)
+        query += " ORDER BY id DESC LIMIT ?"
+        params.append(limit)
+        rows = self._conn.execute(query, params).fetchall()
         return [dict(row) for row in rows]
+
+    def get_latest_snapshot(self) -> dict[str, object] | None:
+        """Return the most recent portfolio snapshot, or None if none exist."""
+        row = self._conn.execute("SELECT * FROM portfolio_snapshots ORDER BY id DESC LIMIT 1").fetchone()
+        return dict(row) if row else None
 
     # ------------------------------------------------------------------
     # Conditional order methods

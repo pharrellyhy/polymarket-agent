@@ -101,11 +101,11 @@ def test_risk_gate_blocks_when_daily_loss_exceeded(mocker: object) -> None:
         )
         orch = Orchestrator(config=config, db_path=Path(tmpdir) / "test.db")
 
-        # Execute two buy trades totaling $50 (exceeds max_daily_loss=30)
-        orch._executor.place_order(_make_signal(size=25.0))
-        orch._executor.place_order(_make_signal(size=25.0))
+        # Execute two buy trades on different tokens totaling $50 (exceeds max_daily_loss=30)
+        orch._executor.place_order(_make_signal_with_token("0xtok_a", size=25.0))
+        orch._executor.place_order(_make_signal_with_token("0xtok_b", size=25.0))
 
-        rejection = orch._check_risk(_make_signal(size=10.0))
+        rejection = orch._check_risk(_make_signal_with_token("0xtok_c", size=10.0))
         assert rejection is not None
         assert "daily_loss" in rejection
 
@@ -130,7 +130,9 @@ def test_tick_reuses_risk_snapshot_across_signals(mocker: object) -> None:
     """tick() should not hit DB/CLOB risk lookups once per signal."""
     mocker.patch("polymarket_agent.data.client.subprocess.run", side_effect=_mock_run)  # type: ignore[union-attr]
     with tempfile.TemporaryDirectory() as tmpdir:
-        config = AppConfig(mode="paper", risk=RiskConfig(max_position_size=100.0, max_daily_loss=1000.0, max_open_orders=10))
+        config = AppConfig(
+            mode="paper", risk=RiskConfig(max_position_size=100.0, max_daily_loss=1000.0, max_open_orders=10)
+        )
         orch = Orchestrator(config=config, db_path=Path(tmpdir) / "test.db")
 
         strategy = mocker.Mock()
@@ -156,6 +158,33 @@ def test_tick_reuses_risk_snapshot_across_signals(mocker: object) -> None:
         assert result["trades_executed"] == 2
         orch._calculate_daily_loss.assert_called_once()
         orch._executor.get_open_orders.assert_called_once()
+
+
+def test_tick_with_trades_uses_forced_snapshot_only(mocker: object) -> None:
+    """When trades execute, tick() should force one snapshot write path (no periodic duplicate)."""
+    mocker.patch("polymarket_agent.data.client.subprocess.run", side_effect=_mock_run)  # type: ignore[union-attr]
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = AppConfig(
+            mode="paper", risk=RiskConfig(max_position_size=100.0, max_daily_loss=1000.0, max_open_orders=10)
+        )
+        orch = Orchestrator(config=config, db_path=Path(tmpdir) / "test.db")
+
+        signal = _make_signal_with_token("0xtok1", size=10.0)
+        strategy = mocker.Mock()
+        strategy.analyze.return_value = [signal]
+        orch._strategies = [strategy]
+        orch._data.get_active_markets = mocker.Mock(return_value=[])  # type: ignore[method-assign]
+        mocker.patch("polymarket_agent.orchestrator.aggregate_signals", return_value=[signal])
+        orch._executor.place_order = mocker.Mock(return_value=Order("100", "0xtok1", "buy", 0.5, 10.0, 20.0))  # type: ignore[method-assign]
+
+        orch._record_portfolio_snapshot = mocker.Mock()  # type: ignore[method-assign]
+        orch._force_portfolio_snapshot = mocker.Mock()  # type: ignore[method-assign]
+
+        result = orch.tick()
+
+        assert result["trades_executed"] == 1
+        orch._force_portfolio_snapshot.assert_called_once()
+        orch._record_portfolio_snapshot.assert_not_called()
 
 
 def test_executor_factory_paper_mode(mocker: object) -> None:

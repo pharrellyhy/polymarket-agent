@@ -47,8 +47,8 @@ from polymarket_agent.mcp_server import (
     refresh_signals,
     search_markets,
 )
-from polymarket_agent.orders import ConditionalOrder, OrderStatus, OrderType
 from polymarket_agent.orchestrator import Orchestrator
+from polymarket_agent.orders import ConditionalOrder, OrderStatus, OrderType
 from polymarket_agent.strategies.ai_analyst import AIAnalyst
 from polymarket_agent.strategies.base import Signal
 

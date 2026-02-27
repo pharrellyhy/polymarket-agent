@@ -3,7 +3,6 @@
 from pathlib import Path
 
 import pytest
-
 from polymarket_agent.db import Database
 
 

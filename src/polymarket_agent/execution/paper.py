@@ -1,5 +1,6 @@
 """Paper trading executor for simulated order execution."""
 
+import json
 import logging
 from typing import Any
 
@@ -17,6 +18,32 @@ class PaperTrader(Executor):
         self._balance = starting_balance
         self._db = db
         self._positions: dict[str, dict[str, Any]] = {}
+
+    def recover_from_db(self) -> None:
+        """Restore positions and balance from the latest DB snapshot.
+
+        If no snapshot exists, the current starting balance is kept.
+        """
+        snapshot = self._db.get_latest_snapshot()
+        if snapshot is None:
+            logger.info("No existing snapshot found; starting fresh with balance=%.2f", self._balance)
+            return
+
+        self._balance = float(str(snapshot.get("balance", self._balance)))
+        positions_raw = str(snapshot.get("positions_json", "{}"))
+        try:
+            positions = json.loads(str(positions_raw))
+            if isinstance(positions, dict):
+                self._positions = positions
+                logger.info(
+                    "Recovered %d positions from DB snapshot (balance=%.2f)",
+                    len(self._positions),
+                    self._balance,
+                )
+            else:
+                logger.warning("positions_json is not a dict; ignoring")
+        except (json.JSONDecodeError, TypeError):
+            logger.warning("Failed to parse positions_json from snapshot; starting fresh")
 
     def place_order(self, signal: Signal) -> Order | None:
         """Place a simulated order based on a trade signal.

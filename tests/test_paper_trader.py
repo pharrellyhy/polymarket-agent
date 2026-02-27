@@ -4,6 +4,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+
 from polymarket_agent.db import Database
 from polymarket_agent.execution.paper import PaperTrader
 from polymarket_agent.strategies.base import Signal
@@ -85,6 +86,25 @@ def test_paper_trader_invalid_side_does_not_execute_sell(trader) -> None:
     assert len(db.get_trades()) == 1
 
 
+def test_paper_trader_recovers_balance_and_positions_from_latest_snapshot() -> None:
+    """recover_from_db() should restore balance and positions from the latest snapshot row."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db = Database(Path(tmpdir) / "test.db")
+        db.record_portfolio_snapshot(
+            balance=876.5,
+            total_value=912.5,
+            positions_json='{"0xtok_100":{"market_id":"100","shares":72.0,"avg_price":0.5,"current_price":0.55}}',
+        )
+        paper = PaperTrader(starting_balance=1000.0, db=db)
+
+        paper.recover_from_db()
+
+        portfolio = paper.get_portfolio()
+        assert portfolio.balance == 876.5
+        assert "0xtok_100" in portfolio.positions
+        assert portfolio.positions["0xtok_100"]["shares"] == 72.0
+
+
 def test_paper_trader_sell_reduces_position(trader) -> None:
     """Selling part of a position reduces shares and increases balance."""
     paper, _db = trader
@@ -121,13 +141,18 @@ def test_paper_trader_sell_no_position(trader) -> None:
 
 
 def test_paper_trader_sell_insufficient_shares(trader) -> None:
-    """Selling more shares than held returns None."""
+    """Selling more shares than held should sell all available shares."""
     paper, _db = trader
     paper.place_order(_make_signal(side="buy", price=0.5, size=25.0))
 
     order = paper.place_order(_make_signal(side="sell", price=0.5, size=50.0))
-    assert order is None
-    assert paper.get_portfolio().balance == 975.0
+    assert order is not None
+    assert order.side == "sell"
+    assert order.size == pytest.approx(25.0)
+    assert order.shares == pytest.approx(50.0)
+    portfolio = paper.get_portfolio()
+    assert portfolio.balance == pytest.approx(1000.0)
+    assert "0xtok_100" not in portfolio.positions
 
 
 def test_paper_trader_sell_logs_trade(trader) -> None:

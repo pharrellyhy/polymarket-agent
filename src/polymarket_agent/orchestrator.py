@@ -125,8 +125,11 @@ class Orchestrator:
                 self._auto_create_conditional_orders(sized_signal)
         logger.info("Executed %d trades (mode=%s)", trades_executed, self._config.mode)
 
-        # Record portfolio snapshot
-        self._record_portfolio_snapshot()
+        if trades_executed + conditional_trades > 0:
+            self._force_portfolio_snapshot()
+        else:
+            # No state-changing trade this tick; keep periodic snapshot behavior.
+            self._record_portfolio_snapshot()
 
         return {
             "markets_fetched": len(markets),
@@ -340,7 +343,9 @@ class Orchestrator:
             from polymarket_agent.execution.live import LiveTrader  # noqa: PLC0415
 
             return LiveTrader.from_env(db=db)
-        return PaperTrader(starting_balance=config.starting_balance, db=db)
+        executor = PaperTrader(starting_balance=config.starting_balance, db=db)
+        executor.recover_from_db()
+        return executor
 
     def _build_risk_snapshot(self) -> _RiskSnapshot:
         """Collect current risk inputs once for reuse across a tick."""
@@ -436,6 +441,16 @@ class Orchestrator:
             elapsed = (now - self._last_snapshot_at).total_seconds()
             if elapsed < self._snapshot_interval:
                 return
+        self._write_portfolio_snapshot()
+        self._last_snapshot_at = datetime.now(timezone.utc)
+
+    def _force_portfolio_snapshot(self) -> None:
+        """Persist a portfolio snapshot immediately, bypassing interval throttle."""
+        self._write_portfolio_snapshot()
+        self._last_snapshot_at = datetime.now(timezone.utc)
+
+    def _write_portfolio_snapshot(self) -> None:
+        """Write the current portfolio state to the DB."""
         try:
             portfolio = self.get_portfolio()
             self._db.record_portfolio_snapshot(
@@ -443,7 +458,6 @@ class Orchestrator:
                 total_value=portfolio.total_value,
                 positions_json=json.dumps(portfolio.positions, default=str),
             )
-            self._last_snapshot_at = now
         except Exception:
             logger.debug("Failed to record portfolio snapshot", exc_info=True)
 

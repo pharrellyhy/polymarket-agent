@@ -6,8 +6,7 @@ from unittest.mock import patch
 from polymarket_agent.config import AppConfig, ConditionalOrderConfig
 from polymarket_agent.data.models import Spread
 from polymarket_agent.db import Database
-from polymarket_agent.orders import ConditionalOrder, OrderStatus, OrderType
-
+from polymarket_agent.orders import OrderStatus, OrderType
 
 # ------------------------------------------------------------------
 # DB CRUD
