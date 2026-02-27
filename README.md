@@ -351,8 +351,12 @@ monitoring:
 The dashboard includes:
 - **Portfolio cards** — balance, total value, open positions, recent signal count
 - **P&L chart** — portfolio value over time (Chart.js line chart, auto-refreshes every 15s)
+- **Open positions** — per-position P&L with entry price, current price, unrealized gains, and P&L %
+- **Strategy performance** — per-strategy breakdown with trade count, win rate, net P&L, and signal count
 - **Trades table** — recent trades with strategy, market, side, price, size
 - **Signals table** — recent signals with strategy, confidence, execution status
+- **Conditional orders** — all orders (active, triggered, cancelled) with type badges and trigger details
+- **Config change history** — config hot-reload diffs showing old/new values per changed field
 
 **REST API endpoints** (all return JSON):
 
@@ -360,9 +364,13 @@ The dashboard includes:
 |----------|-------------|
 | `GET /api/health` | Agent version and status |
 | `GET /api/portfolio` | Current balance, total value, positions |
+| `GET /api/positions` | Per-position P&L (entry price, current price, unrealized P&L) |
 | `GET /api/trades?limit=50` | Recent trades |
 | `GET /api/signals?strategy=X&limit=100` | Signal log with optional strategy filter |
 | `GET /api/snapshots?limit=100` | Portfolio value snapshots over time |
+| `GET /api/strategy-performance` | Per-strategy trade count, win rate, net P&L, signal count |
+| `GET /api/conditional-orders?limit=50` | All conditional orders (active, triggered, cancelled) |
+| `GET /api/config-changes?limit=20` | Config hot-reload diff history |
 
 ### Performance Reporting
 
@@ -411,7 +419,7 @@ The auto-tune pipeline periodically evaluates trading performance and invokes Cl
 └────────────────────────────────────┘
 ```
 
-**Config hot-reload** — the `run` loop checks the config file's modification time before each tick. When a change is detected, the orchestrator rebuilds strategies, position sizer, and alert manager from the new config. The executor is preserved so positions remain in memory. Mode changes (e.g. paper → live) are rejected for safety.
+**Config hot-reload** — the `run` loop checks the config file's modification time before each tick. When a change is detected, the orchestrator computes a diff of changed fields, persists it to the `config_changes` table (viewable in the dashboard and via `/api/config-changes`), then rebuilds strategies, position sizer, and alert manager from the new config. The executor is preserved so positions remain in memory. Mode changes (e.g. paper → live) are rejected for safety.
 
 **Setup auto-tuning:**
 
