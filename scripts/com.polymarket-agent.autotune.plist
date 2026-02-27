@@ -27,6 +27,16 @@
     <dict>
         <key>PATH</key>
         <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <!-- Provider: "claude" (default), "openai", or "anthropic" -->
+        <!-- <key>AUTOTUNE_PROVIDER</key> -->
+        <!-- <string>openai</string> -->
+        <!-- <key>AUTOTUNE_MODEL</key> -->
+        <!-- <string>gpt-4o</string> -->
+        <!-- Set the API key for your chosen provider -->
+        <!-- <key>ANTHROPIC_API_KEY</key> -->
+        <!-- <string>sk-ant-...</string> -->
+        <!-- <key>OPENAI_API_KEY</key> -->
+        <!-- <string>sk-...</string> -->
     </dict>
 </dict>
 </plist>

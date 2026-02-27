@@ -19,10 +19,13 @@ strategies:
     order_size: 25
   ai_analyst:
     enabled: false
-    model: claude-sonnet-4-6
+    model: claude-opus-4-6
     max_calls_per_hour: 20
     min_divergence: 0.15
     order_size: 25.0
+    # provider: anthropic or openai (default: anthropic)
+    # base_url: optional, for local/custom endpoints (e.g. http://localhost:11434/v1)
+    # api_key_env: optional, env var name for API key
 
 aggregation:
   min_confidence: 0.3
@@ -55,4 +58,4 @@ monitoring:
   alert_webhooks: []
   snapshot_interval: 300
   dashboard_host: "0.0.0.0"
-  dashboard_port: 8080
+  dashboard_port: 11648

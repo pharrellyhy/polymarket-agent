@@ -4,7 +4,7 @@ import json
 from unittest.mock import MagicMock, patch
 
 from polymarket_agent.data.models import Market
-from polymarket_agent.strategies.ai_analyst import AIAnalyst
+from polymarket_agent.strategies.ai_analyst import _DEFAULT_PROVIDER, AIAnalyst
 
 
 def _make_market(market_id: str = "100", yes_price: float = 0.5) -> Market:
@@ -126,3 +126,114 @@ def test_ai_analyst_sanitizes_market_text() -> None:
     assert "\x01" not in prompt_content
     # Description truncated to 1000 chars
     assert len(prompt_content) < 2500
+
+
+# ------------------------------------------------------------------
+# OpenAI provider tests
+# ------------------------------------------------------------------
+
+
+def _mock_openai_client(response_text: str) -> MagicMock:
+    """Build a mock OpenAI-compatible client."""
+    client = MagicMock()
+    message = MagicMock()
+    message.content = response_text
+    choice = MagicMock()
+    choice.message = message
+    response = MagicMock()
+    response.choices = [choice]
+    client.chat.completions.create.return_value = response
+    return client
+
+
+def _make_openai_analyst(response_text: str, **config_overrides: object) -> AIAnalyst:
+    """Create an AIAnalyst configured for OpenAI with a mock client."""
+    config: dict[str, object] = {
+        "provider": "openai",
+        "model": "gpt-4o",
+        "min_divergence": 0.10,
+        "max_calls_per_hour": 100,
+        **config_overrides,
+    }
+    strategy = AIAnalyst()
+    strategy.configure(config)  # type: ignore[arg-type]
+    strategy._client = _mock_openai_client(response_text)
+    return strategy
+
+
+def test_openai_generates_signal_on_divergence() -> None:
+    """OpenAI provider: divergence generates a buy signal."""
+    strategy = _make_openai_analyst("0.80")
+    signals = strategy.analyze([_make_market("1", yes_price=0.50)], MagicMock())
+    assert len(signals) == 1
+    assert signals[0].side == "buy"
+
+
+def test_openai_generates_sell_signal() -> None:
+    """OpenAI provider: negative divergence generates a sell signal."""
+    strategy = _make_openai_analyst("0.20")
+    signals = strategy.analyze([_make_market("1", yes_price=0.50)], MagicMock())
+    assert len(signals) == 1
+    assert signals[0].side == "sell"
+
+
+def test_openai_no_signal_when_aligned() -> None:
+    """OpenAI provider: no signal when estimate matches price."""
+    strategy = _make_openai_analyst("0.52")
+    signals = strategy.analyze([_make_market("1", yes_price=0.50)], MagicMock())
+    assert len(signals) == 0
+
+
+def test_openai_handles_api_exception() -> None:
+    """OpenAI provider: API exception produces no signal."""
+    strategy = AIAnalyst()
+    strategy.configure({"provider": "openai", "model": "gpt-4o", "min_divergence": 0.10, "max_calls_per_hour": 100})
+    client = MagicMock()
+    client.chat.completions.create.side_effect = RuntimeError("API down")
+    strategy._client = client
+
+    signals = strategy.analyze([_make_market("1", yes_price=0.50)], MagicMock())
+    assert len(signals) == 0
+
+
+def test_openai_graceful_without_api_key() -> None:
+    """OpenAI provider: no client when OPENAI_API_KEY is not set."""
+    with patch.dict("os.environ", {}, clear=True):
+        strategy = AIAnalyst()
+        strategy.configure({"provider": "openai", "model": "gpt-4o"})
+        assert strategy._client is None
+
+
+def test_configure_sets_provider_fields() -> None:
+    """configure() should update provider, base_url, and api_key_env."""
+    strategy = AIAnalyst()
+    assert strategy._provider == _DEFAULT_PROVIDER
+    strategy.configure(
+        {
+            "provider": "openai",
+            "model": "gpt-4o",
+            "base_url": "http://localhost:11434/v1",
+            "api_key_env": "MY_KEY",
+        }
+    )
+    assert strategy._provider == "openai"
+    assert strategy._base_url == "http://localhost:11434/v1"
+    assert strategy._api_key_env == "MY_KEY"
+
+
+def test_custom_api_key_env() -> None:
+    """Custom api_key_env should be used to look up the API key."""
+    with patch.dict("os.environ", {"MY_CUSTOM_KEY": "sk-test"}, clear=True):
+        strategy = AIAnalyst()
+        strategy.configure({"provider": "openai", "model": "test", "api_key_env": "MY_CUSTOM_KEY"})
+        # Client should have been initialized since MY_CUSTOM_KEY is set
+        # (will fail on import but the env check passes)
+        # We just verify the env var resolution
+        assert strategy._resolved_api_key_env() == "MY_CUSTOM_KEY"
+
+
+def test_configure_invalid_provider_falls_back_to_default() -> None:
+    """Unknown provider values should not silently select a wrong client path."""
+    strategy = AIAnalyst()
+    strategy.configure({"provider": "unknown-provider"})
+    assert strategy._provider == _DEFAULT_PROVIDER

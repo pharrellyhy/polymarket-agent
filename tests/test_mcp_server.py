@@ -388,7 +388,7 @@ class TestAnalyzeMarket:
         ctx = _make_ctx(strategies=[analyst])
         with _patch_ctx(ctx):
             result = analyze_market("100")
-        assert "ANTHROPIC_API_KEY" in result["error"]
+        assert "API key" in result["error"]
 
     def test_market_not_found(self) -> None:
         analyst = MagicMock(spec=AIAnalyst)
@@ -621,10 +621,16 @@ class TestGetConditionalOrders:
 
     def test_returns_active_orders(self) -> None:
         order = ConditionalOrder(
-            id=1, token_id="0xtok1", market_id="100",
-            order_type=OrderType.STOP_LOSS, status=OrderStatus.ACTIVE,
-            trigger_price=0.45, size=25.0, parent_strategy="test",
-            reason="Auto SL", created_at="2026-01-01T00:00:00",
+            id=1,
+            token_id="0xtok1",
+            market_id="100",
+            order_type=OrderType.STOP_LOSS,
+            status=OrderStatus.ACTIVE,
+            trigger_price=0.45,
+            size=25.0,
+            parent_strategy="test",
+            reason="Auto SL",
+            created_at="2026-01-01T00:00:00",
         )
         ctx = _make_ctx_with_db(orders=[order])
         with _patch_ctx(ctx):
@@ -637,9 +643,14 @@ class TestGetConditionalOrders:
 class TestCancelConditionalOrder:
     def test_cancel_existing(self) -> None:
         order = ConditionalOrder(
-            id=5, token_id="0xtok1", market_id="100",
-            order_type=OrderType.STOP_LOSS, status=OrderStatus.ACTIVE,
-            trigger_price=0.45, size=25.0, parent_strategy="test",
+            id=5,
+            token_id="0xtok1",
+            market_id="100",
+            order_type=OrderType.STOP_LOSS,
+            status=OrderStatus.ACTIVE,
+            trigger_price=0.45,
+            size=25.0,
+            parent_strategy="test",
             reason="SL",
         )
         ctx = _make_ctx_with_db(orders=[order])
@@ -704,9 +715,17 @@ class TestGetSignalLog:
     def test_returns_entries(self) -> None:
         ctx = _make_ctx_with_db()
         ctx.orchestrator.db.get_signal_log.return_value = [
-            {"id": 1, "strategy": "test", "market_id": "m1", "token_id": "t1",
-             "side": "buy", "confidence": 0.8, "size": 25.0, "status": "generated",
-             "timestamp": "2026-01-01T00:00:00"},
+            {
+                "id": 1,
+                "strategy": "test",
+                "market_id": "m1",
+                "token_id": "t1",
+                "side": "buy",
+                "confidence": 0.8,
+                "size": 25.0,
+                "status": "generated",
+                "timestamp": "2026-01-01T00:00:00",
+            },
         ]
         with _patch_ctx(ctx):
             result = get_signal_log()
@@ -725,8 +744,13 @@ class TestGetPortfolioSnapshots:
     def test_returns_snapshots(self) -> None:
         ctx = _make_ctx_with_db()
         ctx.orchestrator.db.get_portfolio_snapshots.return_value = [
-            {"id": 1, "balance": 1000.0, "total_value": 1050.0,
-             "positions_json": "{}", "timestamp": "2026-01-01T00:00:00"},
+            {
+                "id": 1,
+                "balance": 1000.0,
+                "total_value": 1050.0,
+                "positions_json": "{}",
+                "timestamp": "2026-01-01T00:00:00",
+            },
         ]
         with _patch_ctx(ctx):
             result = get_portfolio_snapshots()

@@ -433,9 +433,10 @@ def place_trade(
 def analyze_market(market_id: str) -> dict[str, Any]:
     """Run AI probability analysis on a specific market.
 
-    Uses Claude to estimate the probability of the market resolving Yes.
-    Returns the AI estimate, current market price, and divergence.
-    Requires ANTHROPIC_API_KEY to be set.
+    Uses the configured LLM provider (Anthropic or OpenAI-compatible) to
+    estimate the probability of the market resolving Yes. Returns the AI
+    estimate, current market price, and divergence. Requires the appropriate
+    API key to be set (ANTHROPIC_API_KEY or OPENAI_API_KEY).
     """
     ctx = _get_ctx()
 
@@ -448,7 +449,7 @@ def analyze_market(market_id: str) -> dict[str, Any]:
         return {"error": "AIAnalyst strategy is not enabled in config"}
 
     if analyst._client is None:
-        return {"error": "AI analysis unavailable (missing ANTHROPIC_API_KEY or anthropic package)"}
+        return {"error": "AI analysis unavailable (missing API key or LLM provider package)"}
 
     # Find the market
     market = _find_market(ctx, market_id)

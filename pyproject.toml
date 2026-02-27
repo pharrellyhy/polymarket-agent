@@ -23,6 +23,7 @@ dependencies = [
 [project.optional-dependencies]
 live = ["py-clob-client>=0.0.1"]
 dashboard = ["fastapi>=0.110", "uvicorn>=0.29"]
+openai = ["openai>=1.0"]
 
 [project.urls]
 Repository = "https://github.com/polymarket-agent/polymarket-agent"

@@ -4,6 +4,94 @@ Last updated: 2026-02-27
 
 ---
 
+## Session Entry — 2026-02-27 (Review Follow-Up: Provider Validation Hardening)
+
+### Problem
+- Review of the new OpenAI-compatible support found a config-safety gap: unknown provider strings were silently routed down OpenAI paths instead of being rejected/falling back predictably.
+- Impact:
+  - `autotune` could fail with misleading API-key/import errors for typoed providers.
+  - `AIAnalyst` could hold an invalid provider value and behave unexpectedly.
+  - CLI `autotune` would do full evaluation work before surfacing provider mistakes.
+
+### Solution
+- **autotune provider validation:** Added explicit provider normalization/validation in `_init_client()` and raise `ValueError` for unsupported providers.
+- **AIAnalyst provider normalization:** `configure()` now lowercases/validates provider and falls back to default (`anthropic`) with a warning on unknown values.
+- **Defensive init guard:** `_init_client()` in `AIAnalyst` now has an explicit unknown-provider fallback branch.
+- **CLI fast-fail validation:** `polymarket-agent autotune` now validates `--provider` early and raises `BadParameter` before orchestrator/evaluation work.
+- **Regression tests:** Added targeted tests for unknown-provider rejection/fallback and CLI validation path.
+
+### Edits
+- `src/polymarket_agent/autotune.py` — added `_SUPPORTED_PROVIDERS` and strict provider validation in `_init_client()`
+- `src/polymarket_agent/strategies/ai_analyst.py` — added provider normalization/validation + fallback safeguards
+- `src/polymarket_agent/cli.py` — added early `--provider` validation in `autotune` command
+- `tests/test_autotune.py` — added unknown-provider `_init_client` test and CLI invalid-provider test
+- `tests/test_ai_analyst.py` — added invalid-provider fallback test
+- `HANDOFF.md` — added this review follow-up entry; removed oldest session entry to keep last 10 entries
+
+### NOT Changed
+- No changes to provider API request payload shapes.
+- No changes to autotune parameter validation/apply semantics.
+- No changes to MCP tool behavior in this follow-up.
+
+### Verification
+```bash
+uv run python -m pytest tests/test_ai_analyst.py tests/test_autotune.py -q   # 38 passed
+./.venv/bin/ruff check src/polymarket_agent/autotune.py src/polymarket_agent/strategies/ai_analyst.py src/polymarket_agent/cli.py tests/test_ai_analyst.py tests/test_autotune.py   # All checks passed
+./.venv/bin/mypy src/polymarket_agent/autotune.py src/polymarket_agent/strategies/ai_analyst.py src/polymarket_agent/cli.py   # Success: no issues found in 3 source files
+```
+
+### Branch
+- Working branch: `main`
+
+---
+
+## Session Entry — 2026-02-27 (OpenAI-Compatible API Support)
+
+### Problem
+- AIAnalyst strategy was hardcoded to Anthropic SDK — no way to use OpenAI-compatible providers (OpenAI, local Ollama/vLLM endpoints).
+- `autotune.sh` used `claude -p` which fails with 403 in non-interactive/launchd contexts. No way to use alternative LLM providers for auto-tuning.
+
+### Solution
+- **AIAnalyst provider abstraction (Step 1):** Added `_DEFAULT_PROVIDER`, `_provider`, `_base_url`, `_api_key_env` instance vars. Split `_init_client()` into `_init_anthropic_client()` / `_init_openai_client()`. Extracted `_call_llm()` to abstract API response shapes. `configure()` now reads `provider`, `base_url`, `api_key_env` and re-initializes the client when changed.
+- **autotune.py module (Step 2):** New `src/polymarket_agent/autotune.py` with `run_autotune()` function. Builds system prompt with tuning rules, sends eval JSON to LLM, parses structured JSON response, validates changes against tunable parameter min/max ranges, applies changes to config.yaml via PyYAML. Supports both anthropic and openai providers.
+- **CLI autotune subcommand (Step 3):** New `polymarket-agent autotune` command with `--provider`, `--model`, `--base-url`, `--api-key-env`, `--period` options. Runs evaluate logic internally then calls `run_autotune()`.
+- **autotune.sh provider dispatch (Step 4):** `AUTOTUNE_PROVIDER` env var selects "claude" (original `claude -p` flow), "openai", or "anthropic" (new direct API flow via CLI subcommand). Also added `AUTOTUNE_MODEL`, `AUTOTUNE_BASE_URL`, `AUTOTUNE_API_KEY_ENV` env vars.
+- **Config + deps (Step 5):** Added commented-out `provider`, `base_url`, `api_key_env` fields to `config.yaml` ai_analyst section. Added `openai = ["openai>=1.0"]` optional dependency group to pyproject.toml.
+- **MCP docstring update (Step 6):** Made `analyze_market` docstring and error message provider-agnostic.
+- **Tests (Step 7):** 7 new OpenAI provider tests in test_ai_analyst.py. 19 new tests in test_autotune.py (parsing, validation, config modification, integration). Updated test_mcp_server.py assertion for generic error message. All 315 tests pass.
+
+### Edits
+- `src/polymarket_agent/strategies/ai_analyst.py` — provider abstraction: `_init_anthropic_client()`, `_init_openai_client()`, `_call_llm()`, updated `configure()`
+- `src/polymarket_agent/autotune.py` — **NEW** LLM-based config auto-tuner module
+- `src/polymarket_agent/cli.py` — added `autotune` subcommand
+- `scripts/autotune.sh` — provider dispatch (claude/openai/anthropic)
+- `scripts/com.polymarket-agent.autotune.plist` — added env var placeholders for provider/model/keys
+- `config.yaml` — commented-out provider fields under ai_analyst
+- `pyproject.toml` — added `openai` optional dependency group
+- `src/polymarket_agent/mcp_server.py` — provider-agnostic docstring and error message
+- `tests/test_ai_analyst.py` — 7 new OpenAI provider tests
+- `tests/test_autotune.py` — **NEW** 19 tests for autotune module
+- `tests/test_mcp_server.py` — updated error message assertion
+
+### NOT Changed
+- `config.py` — `strategies: dict[str, dict[str, Any]]` already passes through arbitrary keys
+- `orchestrator.py` — `_load_strategies()` already handles `cls()` + `configure()`
+- `strategies/base.py` — Strategy ABC is flexible enough
+- No changes to existing Anthropic behavior — default provider remains "anthropic"
+
+### Verification
+```bash
+uv run pytest tests/ -v                  # 315 passed
+uv run ruff check src/ tests/test_ai_analyst.py tests/test_autotune.py tests/test_mcp_server.py  # All checks passed
+uv run mypy src/                         # Success: no issues found in 34 source files
+uv run polymarket-agent autotune --help  # Shows autotune command
+```
+
+### Branch
+- Working branch: `main`
+
+---
+
 ## Session Entry — 2026-02-27 (Review Follow-Up: Dashboard HTML Simplification)
 
 ### Problem
@@ -285,90 +373,6 @@ uv run polymarket-agent status --help   # Shows status command
 uv run python -m pytest tests/test_mcp_server.py -q   # 35 passed
 uv run ruff check src/polymarket_agent/mcp_server.py tests/test_mcp_server.py   # All checks passed
 uv run mypy src/polymarket_agent/mcp_server.py   # Success: no issues found in 1 source file
-```
-
-### Branch
-- Working branch: `main`
-
----
-
-## Session Entry — 2026-02-26 (Known Issues Fix + MCP Data Tools)
-
-### Problem
-- 5 open known issues from code review remained unfixed.
-- 5 new data layer methods (get_event, get_price, get_spread, get_volume, get_positions) were not exposed as MCP tools.
-
-### Solution
-
-**Bug Fixes:**
-- **OrderBook.midpoint/spread edge case (#2):** `midpoint` and `spread` properties now return 0.0 when either asks or bids list is empty, preventing misleading midpoints or negative spreads.
-- **SignalTrader empty token_id (#7):** `_evaluate()` now returns `None` (skips the market) when `clob_token_ids` is missing or too short, instead of emitting a signal with `token_id=""`.
-- **Signal.size semantics (#4):** Added docstring to `Signal` dataclass clarifying that `size` is always USDC and the execution layer converts to shares internally.
-- **Config path silent fallback (#9):** Extracted `_load_config()` helper in CLI that logs a warning when the config file doesn't exist, used by `run`, `tick`, `status`, and `_build_orchestrator`.
-
-**Test Coverage:**
-- **Sell-side PaperTrader tests (#8):** Added 5 tests covering: partial sell reducing position, full sell closing position, sell with no position, sell with insufficient shares, and sell trade logging.
-- **OrderBook empty edge case tests:** 3 tests for empty asks, empty bids, and fully empty book.
-- **SignalTrader missing token_id test:** Verifies markets without `clob_token_ids` produce no signals.
-
-**MCP Data Tools:**
-- Added 5 new MCP tools: `get_event`, `get_price`, `get_spread`, `get_volume`, `get_positions`. Each is a thin wrapper delegating to `PolymarketData` with error handling for CLI failures.
-- 11 new MCP tests covering success paths, not-found/error cases, and empty results.
-
-### Edits
-- `src/polymarket_agent/data/models.py` — guarded `midpoint`/`spread` for empty books
-- `src/polymarket_agent/strategies/signal_trader.py` — skip markets with missing token IDs
-- `src/polymarket_agent/strategies/base.py` — added Signal.size docstring (USDC)
-- `src/polymarket_agent/cli.py` — extracted `_load_config()` with missing-file warning
-- `src/polymarket_agent/mcp_server.py` — added 5 new MCP tools (get_event, get_price, get_spread, get_volume, get_positions)
-- `tests/test_models.py` — 3 new OrderBook edge case tests
-- `tests/test_signal_trader.py` — 1 new missing token_id test
-- `tests/test_paper_trader.py` — 5 new sell-side tests
-- `tests/test_mcp_server.py` — 11 new tests for 5 MCP data tools
-
-### NOT Changed
-- No changes to orchestrator, strategies (except SignalTrader guard), execution layer, or database.
-- MCP `analyze_market` tool unchanged.
-
-### Verification
-```bash
-uv run pytest tests/ -v           # 141 passed
-uv run ruff check src/            # All checks passed
-uv run mypy src/                  # Success: no issues found in 21 source files
-```
-
-### Branch
-- Working branch: `main`
-
----
-
-## Session Entry — 2026-02-26 (Data Layer Gap-Fill Follow-Up: Parsing Fixes)
-
-### Problem
-- Review of the newly added data-layer gap-fill code found a correctness bug in `Position.from_cli()`: numeric fallback parsing used `or` chains, which can treat valid `0.0` values as missing and incorrectly fall through to alternate fields.
-- Example risk: a position with explicit `pnl=0` could incorrectly read `profit` instead.
-
-### Solution
-- **Zero-safe numeric fallback helper:** Added `_float_field_first(data, *keys)` to select the first present key while preserving valid `0`/`0.0` values.
-- **Position parsing fix:** Updated `Position.from_cli()` to use explicit key-presence fallback (`size`/`shares`, `avgPrice`/`avg_price`, `currentPrice`/`current_price`, `pnl`/`profit`) without falsy-value bugs.
-- **Spread parsing improvement:** `Spread.from_cli()` now also parses `bid`/`ask` when present (supports common key variants like `bid`, `bestBid`, `best_bid`) instead of only `spread`.
-- **Regression coverage:** Added a focused client test verifying zero-valued position fields are preserved and do not fall through to alternate keys.
-- **Test helper cleanup:** Replaced the fragile string-replacement mock for `"markets get"` with a proper single-object JSON fixture in `tests/test_client.py`.
-
-### Edits
-- `src/polymarket_agent/data/models.py` — added `_float_field_first()`, fixed `Position.from_cli()` zero-value parsing, improved `Spread.from_cli()` bid/ask parsing
-- `tests/test_client.py` — added zero-value positions regression test; fixed `markets get` mock JSON fixture; minor import-order cleanup
-- `HANDOFF.md` — added this follow-up entry
-
-### NOT Changed
-- No changes to `PolymarketData` method signatures or command wiring from the gap-fill entry.
-- No full test suite rerun (focused client/data-layer verification only).
-
-### Verification
-```bash
-uv run pytest tests/test_client.py -q   # 16 passed
-uv run ruff check src/polymarket_agent/data/models.py src/polymarket_agent/data/client.py tests/test_client.py   # All checks passed
-uv run mypy src/polymarket_agent/data/models.py src/polymarket_agent/data/client.py   # Success: no issues found in 2 source files
 ```
 
 ### Branch

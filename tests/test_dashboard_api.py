@@ -3,7 +3,6 @@
 from pathlib import Path
 
 import pytest
-
 from polymarket_agent.db import Database
 from polymarket_agent.execution.base import Portfolio
 
@@ -45,7 +44,6 @@ class TestDashboardAPI:
     def _setup_app(self, db: Database) -> None:
         try:
             from fastapi.testclient import TestClient  # noqa: PLC0415
-
             from polymarket_agent.dashboard.api import create_app  # noqa: PLC0415
         except ImportError:
             pytest.skip("fastapi not installed")
@@ -160,7 +158,6 @@ class TestDashboardAPI:
     def test_positions_endpoint_empty(self) -> None:
         try:
             from fastapi.testclient import TestClient  # noqa: PLC0415
-
             from polymarket_agent.dashboard.api import create_app  # noqa: PLC0415
         except ImportError:
             pytest.skip("fastapi not installed")

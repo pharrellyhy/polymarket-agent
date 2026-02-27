@@ -494,118 +494,146 @@ def _build_tunable_params(cfg: AppConfig) -> list[dict[str, object]]:
     # Strategy-level parameters
     for name, strat_cfg in cfg.strategies.items():
         if "volume_threshold" in strat_cfg:
-            params.append({
-                "path": f"strategies.{name}.volume_threshold",
-                "current": strat_cfg["volume_threshold"],
-                "min": 500,
-                "max": 50000,
-                "description": f"Minimum 24h volume for {name} to consider a market",
-            })
+            params.append(
+                {
+                    "path": f"strategies.{name}.volume_threshold",
+                    "current": strat_cfg["volume_threshold"],
+                    "min": 500,
+                    "max": 50000,
+                    "description": f"Minimum 24h volume for {name} to consider a market",
+                }
+            )
         if "price_move_threshold" in strat_cfg:
-            params.append({
-                "path": f"strategies.{name}.price_move_threshold",
-                "current": strat_cfg["price_move_threshold"],
-                "min": 0.01,
-                "max": 0.20,
-                "description": f"Minimum price deviation from fair value for {name}",
-            })
+            params.append(
+                {
+                    "path": f"strategies.{name}.price_move_threshold",
+                    "current": strat_cfg["price_move_threshold"],
+                    "min": 0.01,
+                    "max": 0.20,
+                    "description": f"Minimum price deviation from fair value for {name}",
+                }
+            )
         if "min_price" in strat_cfg:
-            params.append({
-                "path": f"strategies.{name}.min_price",
-                "current": strat_cfg["min_price"],
-                "min": 0.01,
-                "max": 0.50,
-                "description": f"Minimum token price filter for {name}",
-            })
+            params.append(
+                {
+                    "path": f"strategies.{name}.min_price",
+                    "current": strat_cfg["min_price"],
+                    "min": 0.01,
+                    "max": 0.50,
+                    "description": f"Minimum token price filter for {name}",
+                }
+            )
         if "spread" in strat_cfg:
-            params.append({
-                "path": f"strategies.{name}.spread",
-                "current": strat_cfg["spread"],
-                "min": 0.01,
-                "max": 0.20,
-                "description": f"Bid-ask spread target for {name}",
-            })
+            params.append(
+                {
+                    "path": f"strategies.{name}.spread",
+                    "current": strat_cfg["spread"],
+                    "min": 0.01,
+                    "max": 0.20,
+                    "description": f"Bid-ask spread target for {name}",
+                }
+            )
         if "order_size" in strat_cfg:
-            params.append({
-                "path": f"strategies.{name}.order_size",
-                "current": strat_cfg["order_size"],
-                "min": 5,
-                "max": 500,
-                "description": f"Default order size (USDC) for {name}",
-            })
+            params.append(
+                {
+                    "path": f"strategies.{name}.order_size",
+                    "current": strat_cfg["order_size"],
+                    "min": 5,
+                    "max": 500,
+                    "description": f"Default order size (USDC) for {name}",
+                }
+            )
         if "price_sum_tolerance" in strat_cfg:
-            params.append({
-                "path": f"strategies.{name}.price_sum_tolerance",
-                "current": strat_cfg["price_sum_tolerance"],
-                "min": 0.005,
-                "max": 0.05,
-                "description": f"Price sum deviation threshold for {name} arb detection",
-            })
+            params.append(
+                {
+                    "path": f"strategies.{name}.price_sum_tolerance",
+                    "current": strat_cfg["price_sum_tolerance"],
+                    "min": 0.005,
+                    "max": 0.05,
+                    "description": f"Price sum deviation threshold for {name} arb detection",
+                }
+            )
 
     # Aggregation parameters
-    params.append({
-        "path": "aggregation.min_confidence",
-        "current": cfg.aggregation.min_confidence,
-        "min": 0.1,
-        "max": 0.9,
-        "description": "Minimum confidence score to accept a signal",
-    })
-    params.append({
-        "path": "aggregation.min_strategies",
-        "current": cfg.aggregation.min_strategies,
-        "min": 1,
-        "max": 4,
-        "description": "Minimum number of strategies that must agree on a signal",
-    })
+    params.append(
+        {
+            "path": "aggregation.min_confidence",
+            "current": cfg.aggregation.min_confidence,
+            "min": 0.1,
+            "max": 0.9,
+            "description": "Minimum confidence score to accept a signal",
+        }
+    )
+    params.append(
+        {
+            "path": "aggregation.min_strategies",
+            "current": cfg.aggregation.min_strategies,
+            "min": 1,
+            "max": 4,
+            "description": "Minimum number of strategies that must agree on a signal",
+        }
+    )
 
     # Risk parameters
-    params.append({
-        "path": "risk.max_position_size",
-        "current": cfg.risk.max_position_size,
-        "min": 10,
-        "max": 1000,
-        "description": "Maximum size of a single position (USDC)",
-    })
-    params.append({
-        "path": "risk.max_daily_loss",
-        "current": cfg.risk.max_daily_loss,
-        "min": 10,
-        "max": 2000,
-        "description": "Maximum daily loss before halting trades (USDC)",
-    })
+    params.append(
+        {
+            "path": "risk.max_position_size",
+            "current": cfg.risk.max_position_size,
+            "min": 10,
+            "max": 1000,
+            "description": "Maximum size of a single position (USDC)",
+        }
+    )
+    params.append(
+        {
+            "path": "risk.max_daily_loss",
+            "current": cfg.risk.max_daily_loss,
+            "min": 10,
+            "max": 2000,
+            "description": "Maximum daily loss before halting trades (USDC)",
+        }
+    )
 
     # Position sizing parameters
-    params.append({
-        "path": "position_sizing.kelly_fraction",
-        "current": cfg.position_sizing.kelly_fraction,
-        "min": 0.05,
-        "max": 0.50,
-        "description": "Fractional Kelly multiplier (lower = more conservative)",
-    })
-    params.append({
-        "path": "position_sizing.max_bet_pct",
-        "current": cfg.position_sizing.max_bet_pct,
-        "min": 0.01,
-        "max": 0.25,
-        "description": "Maximum bet as percentage of portfolio value",
-    })
+    params.append(
+        {
+            "path": "position_sizing.kelly_fraction",
+            "current": cfg.position_sizing.kelly_fraction,
+            "min": 0.05,
+            "max": 0.50,
+            "description": "Fractional Kelly multiplier (lower = more conservative)",
+        }
+    )
+    params.append(
+        {
+            "path": "position_sizing.max_bet_pct",
+            "current": cfg.position_sizing.max_bet_pct,
+            "min": 0.01,
+            "max": 0.25,
+            "description": "Maximum bet as percentage of portfolio value",
+        }
+    )
 
     # Conditional order parameters
     if cfg.conditional_orders.enabled:
-        params.append({
-            "path": "conditional_orders.default_stop_loss_pct",
-            "current": cfg.conditional_orders.default_stop_loss_pct,
-            "min": 0.05,
-            "max": 0.50,
-            "description": "Default stop-loss percentage below entry price",
-        })
-        params.append({
-            "path": "conditional_orders.default_take_profit_pct",
-            "current": cfg.conditional_orders.default_take_profit_pct,
-            "min": 0.05,
-            "max": 1.00,
-            "description": "Default take-profit percentage above entry price",
-        })
+        params.append(
+            {
+                "path": "conditional_orders.default_stop_loss_pct",
+                "current": cfg.conditional_orders.default_stop_loss_pct,
+                "min": 0.05,
+                "max": 0.50,
+                "description": "Default stop-loss percentage below entry price",
+            }
+        )
+        params.append(
+            {
+                "path": "conditional_orders.default_take_profit_pct",
+                "current": cfg.conditional_orders.default_take_profit_pct,
+                "min": 0.05,
+                "max": 1.00,
+                "description": "Default take-profit percentage above entry price",
+            }
+        )
 
     return params
 
@@ -671,6 +699,104 @@ def _build_summary(metrics: object) -> str:
             lines.append(f"  - {note}")
 
     return "\n".join(lines)
+
+
+@app.command()
+def autotune(
+    config: ConfigOption = DEFAULT_CONFIG,
+    db: DbOption = DEFAULT_DB,
+    period: Annotated[str, typer.Option("--period", "-p", help="Evaluation period (e.g. 6h, 24h)")] = "6h",
+    provider: Annotated[str, typer.Option("--provider", help="LLM provider: anthropic or openai")] = "anthropic",
+    model: Annotated[
+        str, typer.Option("--model", help="Model name (e.g. claude-sonnet-4-6, gpt-4o)")
+    ] = "claude-sonnet-4-6",
+    base_url: Annotated[str | None, typer.Option("--base-url", help="Optional API base URL")] = None,
+    api_key_env: Annotated[str | None, typer.Option("--api-key-env", help="Env var name for API key")] = None,
+) -> None:
+    """Run LLM-based auto-tuning of config parameters."""
+    from polymarket_agent.autotune import run_autotune  # noqa: PLC0415
+    from polymarket_agent.backtest.metrics import PortfolioSnapshot, compute_metrics  # noqa: PLC0415
+
+    provider = provider.strip().lower()
+    if provider not in {"anthropic", "openai"}:
+        raise typer.BadParameter("provider must be one of: anthropic, openai", param_hint="--provider")
+
+    cfg, orch = _build_orchestrator(config, db)
+    try:
+        cutoff = _parse_period(period)
+        since = cutoff.strftime("%Y-%m-%d %H:%M:%S")
+
+        trades = orch.db.get_trades(since=since)
+        snapshot_rows = orch.db.get_portfolio_snapshots(limit=10000, since=since)
+        snapshot_rows.reverse()
+
+        snapshots = [
+            PortfolioSnapshot(
+                timestamp=str(s.get("timestamp", "")),
+                balance=float(str(s.get("balance", 0))),
+                total_value=float(str(s.get("total_value", 0))),
+            )
+            for s in snapshot_rows
+        ]
+
+        metrics = compute_metrics(trades, snapshots, cfg.starting_balance)
+
+        strategy_breakdown: dict[str, dict[str, float | int]] = {}
+        for t in trades:
+            strat = str(t.get("strategy", "unknown"))
+            if strat not in strategy_breakdown:
+                strategy_breakdown[strat] = {"trades": 0, "net_pnl": 0.0}
+            strategy_breakdown[strat]["trades"] = int(strategy_breakdown[strat]["trades"]) + 1
+            size = float(str(t.get("size", 0)))
+            if t.get("side") == "sell":
+                strategy_breakdown[strat]["net_pnl"] = float(strategy_breakdown[strat]["net_pnl"]) + size
+            else:
+                strategy_breakdown[strat]["net_pnl"] = float(strategy_breakdown[strat]["net_pnl"]) - size
+
+        eval_data = {
+            "metrics": {
+                "total_return": metrics.total_return,
+                "sharpe_ratio": metrics.sharpe_ratio,
+                "max_drawdown": metrics.max_drawdown,
+                "win_rate": metrics.win_rate,
+                "profit_factor": metrics.profit_factor,
+                "total_trades": metrics.total_trades,
+            },
+            "strategy_breakdown": strategy_breakdown,
+            "trade_analysis": _analyze_trades(trades),
+            "current_config": _json.loads(cfg.model_dump_json()),
+            "tunable_parameters": _build_tunable_params(cfg),
+            "config_file_path": str(config.resolve()),
+            "safety_constraints": {
+                "mode_locked": True,
+                "explanation": (
+                    "Never change the 'mode' field. Only adjust parameters listed in "
+                    "tunable_parameters, respecting min/max ranges."
+                ),
+            },
+            "summary": _build_summary(metrics),
+        }
+
+        typer.echo(f"Evaluating last {period} of performance...")
+        typer.echo(f"Provider: {provider}, Model: {model}")
+
+        applied = run_autotune(
+            eval_data,
+            config.resolve(),
+            provider=provider,
+            model=model,
+            base_url=base_url,
+            api_key_env=api_key_env,
+        )
+
+        if not applied:
+            typer.echo("No changes applied — performance is acceptable or no valid changes suggested.")
+        else:
+            typer.echo(f"Applied {len(applied)} change(s):")
+            for change in applied:
+                typer.echo(f"  {change['path']} = {change['value']}  ({change['reason']})")
+    finally:
+        orch.close()
 
 
 @app.command()

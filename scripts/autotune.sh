@@ -1,10 +1,17 @@
 #!/usr/bin/env bash
-# Auto-tune script: evaluates trading performance and invokes Claude Code
+# Auto-tune script: evaluates trading performance and invokes an LLM
 # to decide whether config.yaml needs adjustments.
 #
 # Usage:
-#   bash scripts/autotune.sh              # default 6h period
-#   AUTOTUNE_PERIOD=24h bash scripts/autotune.sh
+#   bash scripts/autotune.sh              # default: claude provider, 6h period
+#   AUTOTUNE_PROVIDER=openai AUTOTUNE_MODEL=gpt-4o bash scripts/autotune.sh
+#
+# Environment variables:
+#   AUTOTUNE_PROVIDER  — "claude" (default), "openai", or "anthropic"
+#   AUTOTUNE_MODEL     — model name (required for openai/anthropic providers)
+#   AUTOTUNE_PERIOD    — evaluation period, e.g. "6h", "24h" (default: 6h)
+#   AUTOTUNE_BASE_URL  — optional API base URL for OpenAI-compatible endpoints
+#   AUTOTUNE_API_KEY_ENV — optional env var name for API key override
 #
 # Install as launchd job (runs every 6 hours):
 #   cp scripts/com.polymarket-agent.autotune.plist ~/Library/LaunchAgents/
@@ -26,16 +33,37 @@ echo "=== Auto-tune started at $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
 
 cd "$PROJECT_DIR"
 
-EVAL=$(uv run polymarket-agent evaluate --period "${AUTOTUNE_PERIOD:-6h}" --json)
-
-if [ -z "$EVAL" ]; then
-    echo "ERROR: evaluate returned empty output"
-    exit 1
+# Load env from .env if present (for launchd contexts)
+if [ -f "$PROJECT_DIR/.env" ]; then
+    set -a
+    # shellcheck source=/dev/null
+    source "$PROJECT_DIR/.env"
+    set +a
 fi
 
-echo "Evaluation complete. Invoking Claude Code for analysis..."
+AUTOTUNE_PROVIDER="${AUTOTUNE_PROVIDER:-claude}"
+AUTOTUNE_PERIOD="${AUTOTUNE_PERIOD:-6h}"
 
-claude -p "You are an auto-tuning agent for a Polymarket trading bot.
+echo "Provider: $AUTOTUNE_PROVIDER"
+
+if [ "$AUTOTUNE_PROVIDER" = "claude" ]; then
+    # --- Claude Code CLI flow (original approach) ---
+    if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+        echo "ERROR: ANTHROPIC_API_KEY is not set."
+        echo "Set it in the environment, in $PROJECT_DIR/.env, or in the launchd plist EnvironmentVariables."
+        exit 1
+    fi
+
+    EVAL=$(uv run polymarket-agent evaluate --period "$AUTOTUNE_PERIOD" --json)
+
+    if [ -z "$EVAL" ]; then
+        echo "ERROR: evaluate returned empty output"
+        exit 1
+    fi
+
+    echo "Evaluation complete. Invoking Claude Code for analysis..."
+
+    claude -p "You are an auto-tuning agent for a Polymarket trading bot.
 
 Analyze this evaluation output and decide whether to edit config.yaml to improve performance.
 
@@ -49,7 +77,25 @@ RULES:
 
 EVALUATION DATA:
 $EVAL" \
-    --allowedTools "Read,Edit,Write" \
-    --max-turns 10
+        --allowedTools "Read,Edit,Write" \
+        --max-turns 10
+
+else
+    # --- Direct API flow (openai/anthropic providers) ---
+    AUTOTUNE_MODEL="${AUTOTUNE_MODEL:?AUTOTUNE_MODEL must be set for $AUTOTUNE_PROVIDER provider}"
+
+    CMD=(uv run polymarket-agent autotune --period "$AUTOTUNE_PERIOD" --provider "$AUTOTUNE_PROVIDER" --model "$AUTOTUNE_MODEL")
+
+    if [ -n "${AUTOTUNE_BASE_URL:-}" ]; then
+        CMD+=(--base-url "$AUTOTUNE_BASE_URL")
+    fi
+
+    if [ -n "${AUTOTUNE_API_KEY_ENV:-}" ]; then
+        CMD+=(--api-key-env "$AUTOTUNE_API_KEY_ENV")
+    fi
+
+    echo "Running: ${CMD[*]}"
+    "${CMD[@]}"
+fi
 
 echo "=== Auto-tune finished at $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
