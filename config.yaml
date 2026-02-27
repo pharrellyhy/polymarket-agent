@@ -5,8 +5,9 @@ poll_interval: 60
 strategies:
   signal_trader:
     enabled: true
-    volume_threshold: 5000
-    price_move_threshold: 0.03
+    volume_threshold: 2000
+    price_move_threshold: 0.02
+    min_price: 0.05
   market_maker:
     enabled: false
     spread: 0.05
@@ -34,8 +35,8 @@ risk:
 
 conditional_orders:
   enabled: true
-  default_stop_loss_pct: 0.10
-  default_take_profit_pct: 0.20
+  default_stop_loss_pct: 0.50
+  default_take_profit_pct: 0.50
   trailing_stop_enabled: false
   trailing_stop_pct: 0.05
 

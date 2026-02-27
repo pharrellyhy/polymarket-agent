@@ -12,6 +12,7 @@ if TYPE_CHECKING:
 
 _DEFAULT_VOLUME_THRESHOLD: float = 5000.0
 _DEFAULT_PRICE_MOVE_THRESHOLD: float = 0.05
+_DEFAULT_MIN_PRICE: float = 0.10
 _MIDPOINT: float = 0.5
 
 
@@ -28,6 +29,7 @@ class SignalTrader(Strategy):
     def __init__(self) -> None:
         self._volume_threshold: float = _DEFAULT_VOLUME_THRESHOLD
         self._price_move_threshold: float = _DEFAULT_PRICE_MOVE_THRESHOLD
+        self._min_price: float = _DEFAULT_MIN_PRICE
 
     # ------------------------------------------------------------------
     # Strategy interface
@@ -37,6 +39,7 @@ class SignalTrader(Strategy):
         """Load strategy-specific configuration."""
         self._volume_threshold = float(config.get("volume_threshold", _DEFAULT_VOLUME_THRESHOLD))
         self._price_move_threshold = float(config.get("price_move_threshold", _DEFAULT_PRICE_MOVE_THRESHOLD))
+        self._min_price = float(config.get("min_price", _DEFAULT_MIN_PRICE))
 
     def analyze(self, markets: list[Market], data: DataProvider) -> list[Signal]:
         """Return directional signals for qualifying markets."""
@@ -55,6 +58,11 @@ class SignalTrader(Strategy):
             return None
 
         yes_price = market.outcome_prices[0] if market.outcome_prices else _MIDPOINT
+
+        # Skip ultra-cheap tokens where bid-ask spreads destroy profitability
+        if yes_price < self._min_price or yes_price > (1.0 - self._min_price):
+            return None
+
         distance = abs(yes_price - _MIDPOINT)
 
         if distance <= self._price_move_threshold:

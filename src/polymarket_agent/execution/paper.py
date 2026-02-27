@@ -94,14 +94,10 @@ class PaperTrader(Executor):
         shares_to_sell = signal.size / signal.target_price
 
         if shares_to_sell > pos["shares"]:
-            logger.warning(
-                "Insufficient shares for sell: need %.2f, have %.2f",
-                shares_to_sell,
-                pos["shares"],
-            )
-            return None
+            # Sell all available shares instead of rejecting
+            shares_to_sell = pos["shares"]
 
-        proceeds = signal.size
+        proceeds = shares_to_sell * signal.target_price
         self._balance += proceeds
         pos["shares"] -= shares_to_sell
 
@@ -110,12 +106,24 @@ class PaperTrader(Executor):
         else:
             pos["current_price"] = signal.target_price
 
+        # Update signal size to reflect actual proceeds for DB logging
+        signal = Signal(
+            strategy=signal.strategy,
+            market_id=signal.market_id,
+            token_id=signal.token_id,
+            side=signal.side,
+            confidence=signal.confidence,
+            target_price=signal.target_price,
+            size=proceeds,
+            reason=signal.reason,
+        )
+
         order = Order(
             market_id=signal.market_id,
             token_id=signal.token_id,
             side="sell",
             price=signal.target_price,
-            size=signal.size,
+            size=proceeds,
             shares=shares_to_sell,
         )
 

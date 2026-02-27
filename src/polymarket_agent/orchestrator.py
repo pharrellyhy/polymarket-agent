@@ -367,6 +367,12 @@ class Orchestrator:
         if signal.size > risk.max_position_size:
             return f"size {signal.size} exceeds max_position_size {risk.max_position_size}"
 
+        # Reject buy signals for tokens we already hold a position in
+        if signal.side == "buy":
+            positions = self._executor.get_portfolio().positions
+            if signal.token_id in positions:
+                return f"already holding position in {signal.token_id[:16]}..."
+
         snapshot = risk_snapshot if risk_snapshot is not None else self._build_risk_snapshot()
         daily_loss = snapshot.daily_loss
         if daily_loss >= risk.max_daily_loss:
