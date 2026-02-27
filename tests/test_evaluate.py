@@ -4,10 +4,9 @@ import json
 import subprocess
 from pathlib import Path
 
-from typer.testing import CliRunner
-
 from polymarket_agent.cli import _analyze_trades, _build_summary, _build_tunable_params, app
 from polymarket_agent.config import AppConfig
+from typer.testing import CliRunner
 
 runner = CliRunner()
 

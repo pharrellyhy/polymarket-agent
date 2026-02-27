@@ -15,8 +15,9 @@ Agent-friendly auto-trading pipeline for Polymarket prediction markets.
 - **Conditional orders** — stop-loss, take-profit, and trailing stop with auto-creation
 - **Position sizing** — Kelly criterion, fractional Kelly, and fixed sizing methods
 - **Backtesting** — historical CSV replay, performance metrics (Sharpe, drawdown, win rate, profit factor)
+- **Automated strategy tuning** — periodic evaluation + Claude Code-driven config adjustments with config hot-reload
 - **Monitoring & Dashboard** — structured JSON logging, alert webhooks, signal/portfolio tracking, web dashboard
-- **CLI interface** — `run`, `tick`, `status`, `backtest`, `dashboard`, `mcp` commands
+- **CLI interface** — `run`, `tick`, `status`, `report`, `evaluate`, `backtest`, `dashboard`, `mcp` commands
 - **TTL cache** — in-memory per-key cache with configurable expiration on market data
 - **YAML configuration** — mode selection, strategy params, risk limits, and order management in `config.yaml`
 - **Signal aggregation** — deduplication, confidence filtering, and cross-strategy consensus
@@ -31,6 +32,8 @@ flowchart LR
     Exec["Executor<br/>(PaperTrader)"]
     DB[(SQLite)]
     Orch["Orchestrator"]
+    Config["config.yaml"]
+    Tune["Auto-Tune<br/>(launchd, 6h)"]
 
     CLI -->|JSON| Data
     Orch --> Data
@@ -39,9 +42,11 @@ flowchart LR
     Data --> Strat
     Strat -->|Signals| Exec
     Exec --> DB
+    Config -->|hot-reload| Orch
+    Tune -->|evaluate + edit| Config
 ```
 
-The **Orchestrator** drives a fetch → analyze → execute cycle each tick. The **Data Layer** shells out to the `polymarket` CLI with `-o json` and parses responses into Pydantic models. **Strategies** consume market data and emit `Signal` objects. The **Executor** fills orders (paper or live) and persists trades to SQLite.
+The **Orchestrator** drives a fetch → analyze → execute cycle each tick, hot-reloading `config.yaml` when it detects changes. The **Data Layer** shells out to the `polymarket` CLI with `-o json` and parses responses into Pydantic models. **Strategies** consume market data and emit `Signal` objects. The **Executor** fills orders (paper or live) and persists trades to SQLite. The **Auto-Tune** loop periodically evaluates performance and invokes Claude Code to adjust strategy parameters.
 
 ## Quick Start
 
@@ -274,6 +279,8 @@ The `run_backtest` MCP tool provides the same functionality for AI agents.
 
 Real-time observability into the agent's behavior with structured logging, alerts, and a web dashboard.
 
+![Dashboard Screenshot](docs/dashboard-screenshot.png)
+
 #### Structured Logging
 
 Enable JSON-formatted log output for machine-readable log aggregation:
@@ -357,6 +364,74 @@ The dashboard includes:
 | `GET /api/signals?strategy=X&limit=100` | Signal log with optional strategy filter |
 | `GET /api/snapshots?limit=100` | Portfolio value snapshots over time |
 
+### Performance Reporting
+
+Review trading performance with built-in analytics:
+
+```bash
+# Human-readable performance report
+uv run polymarket-agent report --period 24h
+
+# Machine-readable JSON report
+uv run polymarket-agent report --period 7d --json
+```
+
+The `evaluate` command produces structured JSON designed for automated consumption:
+
+```bash
+# Structured evaluation for auto-tuning
+uv run polymarket-agent evaluate --period 24h
+```
+
+The evaluate output includes: metrics (return, Sharpe, drawdown, win rate), per-strategy breakdown, trade analysis, current config, tunable parameters with min/max ranges, safety constraints, and a diagnostic summary.
+
+### Auto-Tuning
+
+The auto-tune pipeline periodically evaluates trading performance and invokes Claude Code to decide whether to adjust `config.yaml`. The trading loop hot-reloads config changes without restarting.
+
+```
+┌────────────────────────────────────┐
+│ Trading Loop (tmux, 24/7)          │
+│ polymarket-agent run               │
+│  - each tick: check config mtime   │
+│  - if changed: reload_config()     │
+└──────────────────┬─────────────────┘
+                   │ reads config.yaml
+┌──────────────────┴─────────────────┐
+│ config.yaml                        │
+│  (edited by Claude Code)           │
+└──────────────────┬─────────────────┘
+                   │ writes
+┌──────────────────┴─────────────────┐
+│ Auto-Tune (launchd, every 6h)      │
+│ scripts/autotune.sh                │
+│  1. polymarket-agent evaluate      │
+│  2. pipe JSON → claude -p          │
+│  3. Claude edits config.yaml       │
+└────────────────────────────────────┘
+```
+
+**Config hot-reload** — the `run` loop checks the config file's modification time before each tick. When a change is detected, the orchestrator rebuilds strategies, position sizer, and alert manager from the new config. The executor is preserved so positions remain in memory. Mode changes (e.g. paper → live) are rejected for safety.
+
+**Setup auto-tuning:**
+
+```bash
+# Run manually
+bash scripts/autotune.sh
+
+# Or schedule via macOS launchd (every 6 hours)
+cp scripts/com.polymarket-agent.autotune.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.polymarket-agent.autotune.plist
+```
+
+**Tuning rules** enforced by the auto-tune prompt:
+- Never changes the `mode` field
+- Adjusts at most 2–3 parameters per session
+- Respects min/max ranges defined in tunable parameters
+- Makes no changes if performance is acceptable (positive return, Sharpe > 0.5, win rate > 45%)
+
+Logs are written to `logs/autotune/autotune-YYYYMMDD-HHMMSS.log`.
+
 ### MCP Server (AI Agent Integration)
 
 The MCP server exposes 22 tools via stdio transport for AI agents:
@@ -432,7 +507,7 @@ conditional_orders:
   trailing_stop_pct: 0.05
 
 position_sizing:
-  method: fixed           # fixed | kelly | fractional_kelly
+  method: fixed
   kelly_fraction: 0.25
   max_bet_pct: 0.10
 
@@ -452,10 +527,14 @@ monitoring:
 ## Project Structure
 
 ```
+scripts/
+├── autotune.sh                    # Auto-tune cron script (evaluate → Claude Code → config edit)
+└── com.polymarket-agent.autotune.plist  # macOS launchd schedule (every 6h)
+
 src/polymarket_agent/
-├── cli.py                  # Typer CLI entry point
-├── config.py               # Pydantic config loading from YAML
-├── orchestrator.py          # Main fetch → analyze → execute loop
+├── cli.py                  # Typer CLI entry point (run, tick, status, report, evaluate, …)
+├── config.py               # Pydantic config loading from YAML + config_mtime()
+├── orchestrator.py          # Main loop + config hot-reload
 ├── db.py                   # SQLite persistence
 ├── orders.py               # Conditional order models
 ├── position_sizing.py      # Kelly criterion position sizing
@@ -519,6 +598,7 @@ mypy src/
 | **6. Order Management** | Done | Stop-loss, take-profit, trailing stop, Kelly sizing |
 | **7. Backtesting** | Done | Historical data replay, performance metrics, DataProvider protocol |
 | **8. Monitoring** | Done | Dashboard, structured logging, alerts, signal/portfolio tracking |
+| **9. Auto-Tuning** | Done | Config hot-reload, evaluate command, Claude Code-driven parameter tuning |
 
 ## Tech Stack
 
