@@ -88,6 +88,9 @@ class PaperTrader(Executor):
             return None
 
         pos = self._positions[signal.token_id]
+        if signal.target_price <= 0:
+            logger.warning("Cannot sell at zero/negative price for token %s", signal.token_id)
+            return None
         shares_to_sell = signal.size / signal.target_price
 
         if shares_to_sell > pos["shares"]:

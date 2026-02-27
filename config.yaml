@@ -5,8 +5,8 @@ poll_interval: 60
 strategies:
   signal_trader:
     enabled: true
-    volume_threshold: 10000
-    price_move_threshold: 0.05
+    volume_threshold: 5000
+    price_move_threshold: 0.03
   market_maker:
     enabled: false
     spread: 0.05
@@ -14,7 +14,7 @@ strategies:
     order_size: 50
   arbitrageur:
     enabled: true
-    price_sum_tolerance: 0.02
+    price_sum_tolerance: 0.01
     order_size: 25
   ai_analyst:
     enabled: false
@@ -24,23 +24,23 @@ strategies:
     order_size: 25.0
 
 aggregation:
-  min_confidence: 0.5
+  min_confidence: 0.3
   min_strategies: 1
 
 risk:
-  max_position_size: 100.0
-  max_daily_loss: 50.0
+  max_position_size: 200.0
+  max_daily_loss: 500.0
   max_open_orders: 10
 
 conditional_orders:
-  enabled: false
+  enabled: true
   default_stop_loss_pct: 0.10
   default_take_profit_pct: 0.20
   trailing_stop_enabled: false
   trailing_stop_pct: 0.05
 
 position_sizing:
-  method: fixed
+  method: fractional_kelly
   kelly_fraction: 0.25
   max_bet_pct: 0.10
 
