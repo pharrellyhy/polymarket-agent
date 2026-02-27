@@ -157,9 +157,32 @@ class TestConditionalOrderChecking:
         assert triggered == 1
         orch.close()
 
+    def test_triggered_order_cancels_sibling_orders_when_position_closes(self, tmp_path: Path) -> None:
+        orch = self._make_orchestrator(tmp_path)
+        orch.db.create_conditional_order(
+            token_id="0xtok1", market_id="100", order_type=OrderType.STOP_LOSS,
+            trigger_price=0.50, size=25.0, parent_strategy="test", reason="SL test",
+        )
+        orch.db.create_conditional_order(
+            token_id="0xtok1", market_id="100", order_type=OrderType.TAKE_PROFIT,
+            trigger_price=0.80, size=25.0, parent_strategy="test", reason="TP test",
+        )
+        orch._executor._positions["0xtok1"] = {
+            "market_id": "100",
+            "shares": 50.0,
+            "avg_price": 0.50,
+            "current_price": 0.45,
+        }
+        orch._data.get_price.return_value = Spread(token_id="0xtok1", bid=0.45, ask=0.50, spread=0.05)
+
+        triggered = orch._check_conditional_orders()
+        assert triggered == 1
+        assert len(orch.db.get_active_conditional_orders()) == 0
+        orch.close()
+
     def test_trailing_stop_updates_watermark(self, tmp_path: Path) -> None:
         orch = self._make_orchestrator(tmp_path)
-        order_id = orch.db.create_conditional_order(
+        orch.db.create_conditional_order(
             token_id="0xtok1", market_id="100", order_type=OrderType.TRAILING_STOP,
             trigger_price=0.0, size=25.0, high_watermark=0.60, trail_percent=0.10,
             parent_strategy="test", reason="Trail test",

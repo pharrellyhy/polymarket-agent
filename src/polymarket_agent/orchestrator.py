@@ -304,6 +304,8 @@ class Orchestrator:
                 result = self._executor.place_order(signal)
                 if result is not None:
                     self._db.update_conditional_order(order.id, status=OrderStatus.TRIGGERED)
+                    if order.token_id not in self._executor.get_portfolio().positions:
+                        self._db.cancel_conditional_orders_for_token(order.token_id)
                     triggered += 1
                     logger.info("Triggered %s order %d at bid=%.4f", order.order_type.value, order.id, bid)
             elif order.order_type == OrderType.TRAILING_STOP:

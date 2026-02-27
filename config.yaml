@@ -19,7 +19,7 @@ strategies:
     order_size: 25
   ai_analyst:
     enabled: true
-    model: gpt-5.2
+    model: gpt-5.1
     max_calls_per_hour: 20
     min_divergence: 0.15
     order_size: 25.0

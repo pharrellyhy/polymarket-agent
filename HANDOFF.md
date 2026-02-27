@@ -1,6 +1,40 @@
 # Polymarket Agent — Handoff Document
 
-Last updated: 2026-02-28
+Last updated: 2026-02-27
+
+---
+
+## Session Entry — 2026-02-27 (Review Follow-Up: Conditional Order Sibling Cleanup)
+
+### Problem
+- Reviewed the newest runtime-fix additions and found a cleanup gap in conditional order execution.
+- When one conditional order triggered and fully closed a position, sibling conditional orders for the same token could remain active.
+- Those leftover siblings had no valid position to protect and could become stale noise later.
+
+### Solution
+- **TDD regression first:** Added a failing orchestrator test that reproduces the sibling-order leftover case.
+- **Minimal orchestrator fix:** After a conditional order executes, `_check_conditional_orders()` now checks whether the position is still held; if not, it cancels remaining active conditional orders for that token via `cancel_conditional_orders_for_token()`.
+- **Small test cleanup:** Removed one pre-existing unused local variable flagged by `ruff`.
+
+### Edits
+- `src/polymarket_agent/orchestrator.py` — cancel sibling active conditional orders when a triggered conditional sell closes the position
+- `tests/test_orders.py` — added `test_triggered_order_cancels_sibling_orders_when_position_closes`; removed unused `order_id` local in trailing-stop test
+- `HANDOFF.md` — added this review follow-up entry; removed oldest session entry to keep last 10 entries
+
+### NOT Changed
+- No changes to conditional-order trigger thresholds, order types, or DB schema.
+- No changes to strategy generation, position sizing, or paper-trader fill math.
+
+### Verification
+```bash
+uv run python -m pytest tests/test_orders.py::TestConditionalOrderChecking::test_triggered_order_cancels_sibling_orders_when_position_closes -q   # failed first, then passed after fix
+uv run python -m pytest tests/test_orders.py -q                                                                                                    # 16 passed
+ruff check src/polymarket_agent/orchestrator.py tests/test_orders.py                                                                               # All checks passed
+./.venv/bin/mypy src/polymarket_agent/orchestrator.py                                                                                              # Success: no issues found in 1 source file
+```
+
+### Branch
+- Working branch: `main`
 
 ---
 
@@ -341,44 +375,6 @@ uv run ruff check src/ tests/test_dashboard_api.py tests/test_config_reload.py  
 uv run python -m pytest tests/test_evaluate.py -q   # 13 passed
 uv run ruff check src/polymarket_agent/cli.py tests/test_evaluate.py   # All checks passed
 uv run mypy src/polymarket_agent/cli.py   # Success: no issues found in 1 source file
-```
-
-### Branch
-- Working branch: `main`
-
----
-
-## Session Entry — 2026-02-27 (Automated Strategy Tuning via Claude Code)
-
-### Problem
-- The trading loop runs 24/7 but tuning requires manually running `report`, reading output, editing `config.yaml`, and restarting. No automated performance review or config adjustment mechanism existed.
-
-### Solution
-- **Config hot-reload (Step 1):** Added `config_mtime()` helper and `Orchestrator.reload_config()` method. The `run` loop now checks config file mtime before each tick and hot-reloads on change. Safety: mode changes (paper→live) are rejected; executor is preserved so positions stay in memory; config parse failures are caught and logged without interrupting the loop.
-- **`evaluate` command (Step 2):** New `polymarket-agent evaluate --period 24h --json` command outputs structured JSON with: metrics, per-strategy breakdown, trade analysis, current config, tunable parameters (with min/max ranges), safety constraints, and a natural-language summary with diagnostic notes.
-- **Auto-tune script (Step 3):** `scripts/autotune.sh` runs evaluate, pipes JSON to `claude -p` with tuning rules (never change mode, max 2-3 params, respect min/max). `scripts/com.polymarket-agent.autotune.plist` schedules it every 6 hours via macOS launchd.
-- **21 new tests:** 8 config reload tests (mtime, strategy rebuild, mode rejection, executor preservation, risk update, poll interval) + 13 evaluate tests (tunable params, trade analysis, summary diagnostics, CLI JSON/text output).
-
-### Edits
-- `src/polymarket_agent/config.py` — added `config_mtime(path)` function
-- `src/polymarket_agent/orchestrator.py` — added `reload_config(new_config)` method and `poll_interval` property
-- `src/polymarket_agent/cli.py` — hot-reload logic in `run()` loop; added `evaluate` command with `_build_tunable_params()`, `_analyze_trades()`, `_build_summary()` helpers
-- `scripts/autotune.sh` — **NEW** auto-tune shell script invoking Claude Code
-- `scripts/com.polymarket-agent.autotune.plist` — **NEW** macOS launchd plist (6h interval)
-- `tests/test_config_reload.py` — **NEW** 8 tests for hot-reload functionality
-- `tests/test_evaluate.py` — **NEW** 13 tests for evaluate command and helpers
-
-### NOT Changed
-- No changes to strategy logic, MCP server, data layer, or execution layer.
-- No changes to existing `report` command (evaluate is a separate, machine-readable complement).
-- launchd plist not auto-installed — user must manually `cp` and `launchctl load`.
-
-### Verification
-```bash
-uv run pytest tests/test_config_reload.py tests/test_evaluate.py -v   # 21 passed
-uv run pytest tests/ -v                                                # 278 passed (full suite)
-uv run ruff check src/ tests/test_config_reload.py tests/test_evaluate.py  # All checks passed
-uv run polymarket-agent evaluate --help                                # Shows evaluate command
 ```
 
 ### Branch
