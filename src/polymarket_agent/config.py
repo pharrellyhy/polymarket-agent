@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
+from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
 
@@ -86,6 +87,7 @@ class AppConfig(BaseModel):
 
 def load_config(path: Path) -> AppConfig:
     """Load config from a YAML file."""
+    load_dotenv(path.parent / ".env", override=False)
     return AppConfig(**yaml.safe_load(path.read_text()))
 
 
