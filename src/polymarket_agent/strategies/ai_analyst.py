@@ -168,7 +168,8 @@ class AIAnalyst(Strategy):
         if self._provider == "anthropic":
             response = self._client.messages.create(
                 model=self._model,
-                max_tokens=10,
+                max_tokens=16,
+                temperature=0,
                 messages=[{"role": "user", "content": prompt}],
             )
             return str(response.content[0].text).strip()
@@ -176,10 +177,15 @@ class AIAnalyst(Strategy):
         # OpenAI-compatible provider
         response = self._client.chat.completions.create(
             model=self._model,
-            max_tokens=10,
-            messages=[{"role": "user", "content": prompt}],
+            max_tokens=16,
+            temperature=0,
+            messages=[
+                {"role": "system", "content": "Respond with ONLY a single decimal number between 0.0 and 1.0. No other text."},
+                {"role": "user", "content": prompt},
+            ],
         )
-        return str(response.choices[0].message.content).strip()
+        content = response.choices[0].message.content
+        return content.strip() if content else ""
 
     def _evaluate(self, market: Market) -> Signal | None:
         if not market.outcome_prices or not market.clob_token_ids:
