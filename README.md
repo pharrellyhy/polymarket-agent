@@ -507,7 +507,7 @@ conditional_orders:
   trailing_stop_pct: 0.05
 
 position_sizing:
-  method: fixed
+  method: fixed           # fixed | kelly | fractional_kelly
   kelly_fraction: 0.25
   max_bet_pct: 0.10
 
