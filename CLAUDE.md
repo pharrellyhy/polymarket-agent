@@ -117,6 +117,18 @@ Formatting rules:
 - Keep only the **last 10 entries**; delete older entries from the bottom when adding new ones
 - Maintain the `Last updated: YYYY-MM-DD` date in the header
 
+## Auto-Compact Instructions
+
+When the conversation context is automatically compacted, the summary **must** preserve the following in order of priority:
+
+1. **Current task list** — every task's ID, status (pending/in-progress/completed), and any blocking dependencies
+2. **Active plan** — which plan file in `docs/plans/` is being followed and which step is currently in progress
+3. **Uncommitted work** — files that have been modified but not yet committed, and the intent behind each change
+4. **Key decisions made** — any design choices, trade-offs, or user preferences established during the session
+5. **Blockers and open questions** — anything unresolved that needs attention before proceeding
+
+After compaction, immediately run `TaskList` to verify task state, and re-read the active plan in `docs/plans/` before resuming work. Do not re-do completed tasks or re-explore code that was already understood.
+
 ## MCP Guidelines
 
 Always use context7 when you need code generation, setup or configuration steps, or library/API documentation. Automatically use the Context7 MCP tools to resolve library id and get library docs without being explicitly asked.
