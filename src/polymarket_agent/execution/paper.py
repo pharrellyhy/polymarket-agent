@@ -2,6 +2,7 @@
 
 import json
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 from polymarket_agent.db import Database, Trade
@@ -35,6 +36,13 @@ class PaperTrader(Executor):
             positions = json.loads(str(positions_raw))
             if isinstance(positions, dict):
                 self._positions = positions
+                # Backfill metadata for positions recovered without it
+                now_iso = datetime.now(timezone.utc).isoformat()
+                for pos in self._positions.values():
+                    if "opened_at" not in pos:
+                        pos["opened_at"] = now_iso
+                    if "entry_strategy" not in pos:
+                        pos["entry_strategy"] = "unknown"
                 logger.info(
                     "Recovered %d positions from DB snapshot (balance=%.2f)",
                     len(self._positions),
@@ -93,6 +101,8 @@ class PaperTrader(Executor):
                 "shares": shares,
                 "avg_price": signal.target_price,
                 "current_price": signal.target_price,
+                "opened_at": datetime.now(timezone.utc).isoformat(),
+                "entry_strategy": signal.strategy,
             }
 
         order = Order(

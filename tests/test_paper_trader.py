@@ -164,3 +164,28 @@ def test_paper_trader_sell_logs_trade(trader) -> None:
     assert len(trades) == 2
     assert trades[0]["side"] == "buy"
     assert trades[1]["side"] == "sell"
+
+
+def test_paper_trader_buy_sets_metadata(trader) -> None:
+    """Buy orders should record opened_at and entry_strategy in position."""
+    paper, _db = trader
+    paper.place_order(_make_signal(side="buy", price=0.5, size=50.0))
+    pos = paper.get_portfolio().positions["0xtok_100"]
+    assert "opened_at" in pos
+    assert pos["entry_strategy"] == "test"
+
+
+def test_paper_trader_recover_sets_default_metadata() -> None:
+    """Recovered positions without metadata get sensible defaults."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db = Database(Path(tmpdir) / "test.db")
+        db.record_portfolio_snapshot(
+            balance=900.0,
+            total_value=950.0,
+            positions_json='{"0xtok_100":{"market_id":"100","shares":50.0,"avg_price":0.5,"current_price":0.55}}',
+        )
+        paper = PaperTrader(starting_balance=1000.0, db=db)
+        paper.recover_from_db()
+        pos = paper.get_portfolio().positions["0xtok_100"]
+        assert "opened_at" in pos
+        assert pos["entry_strategy"] == "unknown"
