@@ -59,4 +59,5 @@ dev = [
     "ruff>=0.4",
     "mypy>=1.10",
     "types-pyyaml>=6.0.12.20250915",
+    "openai>=1.0",
 ]

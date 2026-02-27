@@ -59,7 +59,7 @@ def _init_client(
 
         return anthropic.Anthropic(api_key=api_key), provider_normalized
 
-    import openai  # type: ignore[import-not-found]  # noqa: PLC0415
+    import openai  # noqa: PLC0415
 
     kwargs: dict[str, Any] = {"api_key": api_key}
     if base_url:

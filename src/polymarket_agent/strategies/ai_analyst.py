@@ -109,7 +109,7 @@ class AIAnalyst(Strategy):
             logger.info("%s not set — AIAnalyst disabled", env_var)
             return
         try:
-            import openai  # type: ignore[import-not-found]  # noqa: PLC0415
+            import openai  # noqa: PLC0415
 
             kwargs: dict[str, Any] = {"api_key": api_key}
             if self._base_url:
