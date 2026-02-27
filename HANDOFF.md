@@ -1,6 +1,47 @@
 # Polymarket Agent — Handoff Document
 
-Last updated: 2026-02-27
+Last updated: 2026-02-28
+
+---
+
+## Session Entry — 2026-02-28 (Runtime Fixes: .env Loading, AI Analyst, Zero-Price Writeoff, Stale Orders)
+
+### Problem
+- `OPENAI_API_KEY` was configured in `.env` but never loaded — `os.environ.get()` couldn't see it.
+- AI analyst returned empty responses from the OpenAI proxy, causing "Could not parse probability" warnings every tick.
+- Positions that hit zero price caused an infinite loop: ExitManager generated a sell signal, paper trader rejected it (price ≤ 0), position stayed open, repeat every tick.
+- Conditional orders (stop-loss/take-profit) for closed positions spammed "No position to sell" warnings every tick because they were never cancelled.
+
+### Solution
+- **python-dotenv integration:** Added `python-dotenv>=1.0` dependency. `load_config()` now calls `load_dotenv()` before parsing YAML, making `.env` vars available to all code paths.
+- **AI analyst LLM hardening:** Added `temperature=0` for deterministic output, bumped `max_tokens` 10→16, added system message for OpenAI path, handled `None` content from API.
+- **Zero-price writeoff:** Split `<= 0` guard into `< 0` (reject as invalid) and `== 0` (write off position). Writeoff removes position, logs cost basis for PnL traceability, and returns an Order so downstream cleanup runs.
+- **Stale conditional order cleanup:** Added `cancel_conditional_orders_for_token()` DB method. Orchestrator now: (1) cancels stale orders before attempting execution if position is gone, (2) cancels all related orders after an exit trade executes.
+- **Code simplification:** Used `dataclasses.replace()` instead of manual Signal reconstruction in paper trader sell path.
+
+### Edits
+- `pyproject.toml` — added `python-dotenv>=1.0` dependency
+- `uv.lock` — updated lockfile
+- `src/polymarket_agent/config.py` — imported `load_dotenv`, call it in `load_config()`
+- `src/polymarket_agent/strategies/ai_analyst.py` — `temperature=0`, `max_tokens=16`, system message, `None` content handling in `_call_llm()`
+- `src/polymarket_agent/execution/paper.py` — zero-price writeoff with cost basis, negative price rejection, `dataclasses.replace()` simplification
+- `src/polymarket_agent/db.py` — added `cancel_conditional_orders_for_token()` method
+- `src/polymarket_agent/orchestrator.py` — stale order cancellation in `_check_conditional_orders()`, order cleanup after exit trades
+- `tests/test_paper_trader.py` — added `test_paper_trader_sell_writeoff_at_zero_price` and `test_paper_trader_sell_negative_price_rejected`
+
+### NOT Changed
+- No changes to strategy logic, exit rules, or signal aggregation.
+- No changes to MCP server, dashboard, or live trader.
+- No DB schema changes (only new query method).
+
+### Verification
+```bash
+uv run pytest tests/ -v              # 337 passed
+uv run ruff check src/               # All checks passed
+```
+
+### Branch
+- Working branch: `main`
 
 ---
 
@@ -345,54 +386,13 @@ uv run polymarket-agent evaluate --help                                # Shows e
 
 ---
 
-## Session Entry — 2026-02-27 (Review Follow-Up: Snapshot Path Cleanup + Paper Recovery Simplification)
-
-### Problem
-- Reviewed the newly added 2026-02-27 performance/persistence code in `orchestrator.py`, `paper.py`, and related tests.
-- Found a duplication edge case: `tick()` could write a periodic snapshot and then immediately write a forced snapshot in the same trade tick.
-- Found a small API design smell: `PaperTrader.recover_from_db()` required a `db` parameter even though `PaperTrader` already owns `self._db`.
-- The handoff-listed pre-existing test failure (`test_paper_trader_sell_insufficient_shares`) was still present and out of sync with the current sell behavior (sell all available shares).
-
-### Solution
-- **Snapshot path cleanup:** Updated `tick()` to use one snapshot path per tick:
-  - trade tick -> forced snapshot only
-  - no-trade tick -> periodic snapshot only
-- **Paper recovery simplification:** Changed `PaperTrader.recover_from_db()` to use `self._db` directly and removed the redundant parameter from call sites.
-- **Regression coverage added:** New tests verify:
-  - trade ticks use only the forced snapshot path
-  - paper trader recovery restores balance/positions from the latest snapshot
-- **Pre-existing failure resolved:** Updated `test_paper_trader_sell_insufficient_shares` to match actual executor semantics (partial fill by selling all available shares).
-
-### Edits
-- `src/polymarket_agent/orchestrator.py` — removed duplicate snapshot path on trade ticks; updated paper recovery call
-- `src/polymarket_agent/execution/paper.py` — simplified `recover_from_db()` signature and DB usage
-- `tests/test_risk_gate.py` — added snapshot-path regression test
-- `tests/test_paper_trader.py` — added recovery regression test; fixed insufficient-shares sell test expectations
-- `HANDOFF.md` — added this review-follow-up entry; removed oldest session entry to keep last 10 entries
-
-### NOT Changed
-- No changes to strategy logic, MCP server, or data-layer parsing behavior in this follow-up.
-- No full-suite rerun; verification remained scoped to the touched orchestrator/paper test surfaces.
-
-### Verification
-```bash
-uv run python -m pytest tests/test_risk_gate.py tests/test_paper_trader.py -q   # 22 passed
-uv run ruff check src/polymarket_agent/orchestrator.py src/polymarket_agent/execution/paper.py tests/test_risk_gate.py tests/test_paper_trader.py   # All checks passed
-uv run mypy src/polymarket_agent/orchestrator.py src/polymarket_agent/execution/paper.py   # Success: no issues found in 2 source files
-```
-
-### Branch
-- Working branch: `main`
-
----
-
 ## Project Summary
 
 **Polymarket Agent** is a Python auto-trading pipeline for Polymarket prediction markets. It wraps the official `polymarket` CLI (v0.1.4, installed via Homebrew) into a structured system with pluggable trading strategies, paper/live execution, and MCP server integration for AI agents.
 
 ## Current State: Phase 4 COMPLETE
 
-- 333 tests passing, ruff lint clean, mypy strict clean (35 source files)
+- 337 tests passing, ruff lint clean, mypy strict clean (35 source files)
 - All 4 strategies implemented: SignalTrader, MarketMaker, Arbitrageur, AIAnalyst
 - Signal aggregation integrated (groups by market+token+side, unique strategy consensus)
 - MCP server with 14 tools: search_markets, get_market_detail, get_price_history, get_leaderboard, get_portfolio, get_signals, refresh_signals, place_trade, analyze_market, get_event, get_price, get_spread, get_volume, get_positions

@@ -128,6 +128,7 @@ class Orchestrator:
                         f"Exit trade: {signal.side} {signal.size:.2f} USDC "
                         f"on {signal.market_id} ({signal.reason})"
                     )
+                    self._db.cancel_conditional_orders_for_token(signal.token_id)
                 else:
                     self._record_signal(signal, status="rejected")
 
@@ -283,6 +284,13 @@ class Orchestrator:
 
             bid = spread.bid
             if self._should_trigger(order, bid):
+                # Cancel stale orders whose position has already been closed.
+                portfolio = self._executor.get_portfolio()
+                if order.token_id not in portfolio.positions:
+                    self._db.update_conditional_order(order.id, status=OrderStatus.CANCELLED)
+                    logger.info("Cancelled stale %s order %d — no position for token %s", order.order_type.value, order.id, order.token_id)
+                    continue
+
                 signal = Signal(
                     strategy=order.parent_strategy,
                     market_id=order.market_id,

@@ -270,6 +270,15 @@ class Database:
             )
         self._conn.commit()
 
+    def cancel_conditional_orders_for_token(self, token_id: str) -> int:
+        """Cancel all active conditional orders for the given token. Returns count cancelled."""
+        cursor = self._conn.execute(
+            "UPDATE conditional_orders SET status = ? WHERE token_id = ? AND status = 'active'",
+            (OrderStatus.CANCELLED.value, token_id),
+        )
+        self._conn.commit()
+        return cursor.rowcount
+
     def update_high_watermark(self, order_id: int, high_watermark: float) -> None:
         """Update the high watermark for a trailing stop order."""
         self._conn.execute(
