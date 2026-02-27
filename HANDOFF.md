@@ -4,6 +4,78 @@ Last updated: 2026-02-27
 
 ---
 
+## Session Entry — 2026-02-27 (Review Follow-Up: Evaluate Helper Simplification)
+
+### Problem
+- Reviewed the newest auto-tuning additions from the top handoff entry (`Automated Strategy Tuning`), focusing on `evaluate` helper paths.
+- Found cleanup opportunities in the new evaluate helpers:
+  - `_build_summary()` accepted extra parameters that were never used.
+  - `_analyze_trades()` built intermediate buy/sell/size lists when simple counters/accumulators were sufficient.
+
+### Solution
+- **Simplified `_analyze_trades()` implementation:** Replaced list materialization with a single-pass counter/accumulator loop for buys, sells, and total size while preserving output shape.
+- **Simplified `_build_summary()` interface:** Removed unused parameters and updated call sites/tests to pass only `metrics`, matching actual usage.
+- **Behavior preserved:** JSON payload schema and summary content rules remain unchanged.
+
+### Edits
+- `src/polymarket_agent/cli.py` — simplified `_analyze_trades()` internals; removed unused `_build_summary()` parameters and updated caller
+- `tests/test_evaluate.py` — updated helper tests for the simplified `_build_summary()` signature
+- `HANDOFF.md` — added this review follow-up entry; removed oldest session entry to keep last 10 entries
+
+### NOT Changed
+- No changes to hot-reload behavior, orchestrator config reload logic, or auto-tune script/plist wiring in this follow-up.
+- No changes to strategy logic, execution behavior, or MCP tools.
+
+### Verification
+```bash
+uv run python -m pytest tests/test_evaluate.py -q   # 13 passed
+uv run ruff check src/polymarket_agent/cli.py tests/test_evaluate.py   # All checks passed
+uv run mypy src/polymarket_agent/cli.py   # Success: no issues found in 1 source file
+```
+
+### Branch
+- Working branch: `main`
+
+---
+
+## Session Entry — 2026-02-27 (Automated Strategy Tuning via Claude Code)
+
+### Problem
+- The trading loop runs 24/7 but tuning requires manually running `report`, reading output, editing `config.yaml`, and restarting. No automated performance review or config adjustment mechanism existed.
+
+### Solution
+- **Config hot-reload (Step 1):** Added `config_mtime()` helper and `Orchestrator.reload_config()` method. The `run` loop now checks config file mtime before each tick and hot-reloads on change. Safety: mode changes (paper→live) are rejected; executor is preserved so positions stay in memory; config parse failures are caught and logged without interrupting the loop.
+- **`evaluate` command (Step 2):** New `polymarket-agent evaluate --period 24h --json` command outputs structured JSON with: metrics, per-strategy breakdown, trade analysis, current config, tunable parameters (with min/max ranges), safety constraints, and a natural-language summary with diagnostic notes.
+- **Auto-tune script (Step 3):** `scripts/autotune.sh` runs evaluate, pipes JSON to `claude -p` with tuning rules (never change mode, max 2-3 params, respect min/max). `scripts/com.polymarket-agent.autotune.plist` schedules it every 6 hours via macOS launchd.
+- **21 new tests:** 8 config reload tests (mtime, strategy rebuild, mode rejection, executor preservation, risk update, poll interval) + 13 evaluate tests (tunable params, trade analysis, summary diagnostics, CLI JSON/text output).
+
+### Edits
+- `src/polymarket_agent/config.py` — added `config_mtime(path)` function
+- `src/polymarket_agent/orchestrator.py` — added `reload_config(new_config)` method and `poll_interval` property
+- `src/polymarket_agent/cli.py` — hot-reload logic in `run()` loop; added `evaluate` command with `_build_tunable_params()`, `_analyze_trades()`, `_build_summary()` helpers
+- `scripts/autotune.sh` — **NEW** auto-tune shell script invoking Claude Code
+- `scripts/com.polymarket-agent.autotune.plist` — **NEW** macOS launchd plist (6h interval)
+- `tests/test_config_reload.py` — **NEW** 8 tests for hot-reload functionality
+- `tests/test_evaluate.py` — **NEW** 13 tests for evaluate command and helpers
+
+### NOT Changed
+- No changes to strategy logic, MCP server, data layer, or execution layer.
+- No changes to existing `report` command (evaluate is a separate, machine-readable complement).
+- launchd plist not auto-installed — user must manually `cp` and `launchctl load`.
+
+### Verification
+```bash
+uv run pytest tests/test_config_reload.py tests/test_evaluate.py -v   # 21 passed
+uv run pytest tests/ -v                                                # 278 passed (full suite)
+uv run ruff check src/ tests/test_config_reload.py tests/test_evaluate.py  # All checks passed
+uv run polymarket-agent evaluate --help                                # Shows evaluate command
+```
+
+### Branch
+- Working branch: `main`
+
+---
+
 ## Session Entry — 2026-02-27 (Review Follow-Up: Snapshot Path Cleanup + Paper Recovery Simplification)
 
 ### Problem
@@ -321,110 +393,6 @@ uv run mypy src/polymarket_agent/cli.py src/polymarket_agent/orchestrator.py src
 
 ---
 
-## Session Entry — 2026-02-26 (Phase 4: Live Trading + Risk Management + Review Fixes)
-
-### Problem
-- Phase 4 pending: live order execution via py-clob-client, risk management enforcement, and several known issues from code review.
-- Code review (Codex) flagged: prompt injection in AIAnalyst, orchestrator ignoring config mode, unused strategy config params.
-
-### Solution
-
-**Phase 4 Implementation:**
-- **LiveTrader (`execution/live.py`)** — new Executor wrapping py-clob-client ClobClient for real order placement. Limit orders (GTC), trade logging to SQLite, cancel/open order support. Lazy imports for optional dependency. `from_env()` factory reads `POLYMARKET_PRIVATE_KEY` and optional `POLYMARKET_FUNDER` env vars.
-- **Executor factory** — Orchestrator now selects PaperTrader or LiveTrader based on `config.mode`. Live mode imports LiveTrader lazily and calls `from_env()`.
-- **Risk gate** — `_check_risk(signal)` method in Orchestrator enforces `max_position_size`, `max_daily_loss`, and `max_open_orders` before every trade execution. Daily loss calculated from same-day DB trades.
-- **Executor ABC extension** — Added `cancel_order()` and `get_open_orders()` with default implementations (PaperTrader returns False/[]).
-- **Database context manager** — `Database.__enter__`/`__exit__` for proper connection cleanup.
-- **Subprocess timeout** — `_run_cli()` now has `timeout=30.0` parameter, raises RuntimeError on timeout.
-- **CLI safety** — `polymarket-agent run --live` flag required for live mode. All CLI commands now call `orch.close()` in finally blocks.
-- **py-clob-client optional dependency** — `pip install polymarket-agent[live]` installs py-clob-client.
-
-**Code Review Fixes:**
-- **Prompt injection (High)** — AIAnalyst now sanitizes market text: strips control characters, truncates to 500/1000 chars, uses explicit `--- BEGIN/END MARKET DATA ---` delimiters.
-- **Arbitrageur min_deviation (Low)** — Now enforced: deviation must exceed both `price_sum_tolerance` AND `min_deviation` to generate a signal.
-- **MarketMaker max_inventory (Low)** — Removed dead config parameter. Position-level limits handled by Orchestrator risk gate.
-- **README AI docs (Medium)** — Skipped: code already gracefully degrades with clear error messages, per CLAUDE.md guidelines.
-
-### Edits
-- `pyproject.toml` — added `[project.optional-dependencies] live = ["py-clob-client>=0.0.1"]`
-- `src/polymarket_agent/execution/base.py` — added `cancel_order()` and `get_open_orders()` to Executor ABC
-- `src/polymarket_agent/execution/live.py` — **NEW** (LiveTrader with ClobClient wrapper)
-- `src/polymarket_agent/orchestrator.py` — added `_build_executor()`, `_check_risk()`, `_calculate_daily_loss()`, `close()`; risk gate integrated into `tick()`
-- `src/polymarket_agent/data/client.py` — added `timeout=30.0` to `_run_cli()`
-- `src/polymarket_agent/db.py` — added `__enter__`/`__exit__` context manager
-- `src/polymarket_agent/cli.py` — added `--live` flag to `run`, `orch.close()` in all commands
-- `src/polymarket_agent/strategies/ai_analyst.py` — added `_sanitize_text()`, market text sanitization with delimiters
-- `src/polymarket_agent/strategies/arbitrageur.py` — wired `_min_deviation` into signal gating logic
-- `src/polymarket_agent/strategies/market_maker.py` — removed dead `_max_inventory` config
-- `docs/plans/2026-02-26-polymarket-agent-phase4.md` — **NEW** (Phase 4 design doc)
-- `tests/test_live_trader.py` — **NEW** (8 tests: init, from_env, place_order success/failure/rejected, cancel, open_orders)
-- `tests/test_risk_gate.py` — **NEW** (7 tests: oversized, valid, daily loss, integrated tick, factory, live env, close)
-- `tests/test_ai_analyst.py` — added sanitization test
-- `tests/test_arbitrageur.py` — added min_deviation test
-- `tests/test_market_maker.py` — updated config test to verify no max_inventory
-- `tests/test_db.py` — added context manager test
-- `tests/test_cli.py` — added --live flag test
-- `tests/test_client.py` — added timeout test
-
-### NOT Changed
-- No changes to MCP server (already delegates to Orchestrator which now has the new executor/risk logic).
-- No changes to strategy logic (except the 3 review fixes above).
-- Pre-existing ruff isort issues in test_cli.py, test_client.py, test_db.py, test_paper_trader.py left as-is.
-
-### Verification
-```bash
-uv run pytest tests/ -v           # 109 passed
-uv run ruff check src/            # All checks passed
-uv run mypy src/                  # Success: no issues found in 21 source files
-```
-
-### Branch
-- Working branch: `main`
-
----
-
-## Session Entry — 2026-02-26 (Phase 3 MCP Follow-Up: Signal Cache Split)
-
-### Problem
-- MCP `get_signals()` was implemented as a recompute path, so repeated read-only calls could run `AIAnalyst` and consume hourly AI quota / API cost.
-
-### Solution
-- **Split signal access into read-only vs explicit recompute:**
-  1. `get_signals()` now returns the latest cached aggregated signal snapshot (no strategy execution).
-  2. `refresh_signals()` explicitly recomputes signals and returns a fresh snapshot (may consume AI quota).
-- **Cached signal snapshot in Orchestrator:** Added cached signal storage + timestamp, updated by both `tick()` and `generate_signals()`, so read-only consumers can inspect the latest computed signals safely.
-- **Snapshot metadata:** MCP signal responses now include `source`, `last_updated`, and `freshness_seconds` alongside `signals`.
-- **Tests updated:** Added coverage for cached-empty snapshots and explicit `refresh_signals()` recompute behavior.
-
-### Edits
-- `src/polymarket_agent/orchestrator.py` — added cached signal snapshot state + getters; cache updated from `tick()` and `generate_signals()`
-- `src/polymarket_agent/mcp_server.py` — changed `get_signals()` to cached read-only snapshot; added `refresh_signals()` MCP tool and snapshot serialization helpers
-- `tests/test_mcp_server.py` — updated `get_signals()` assertions and added `refresh_signals()` tests
-- `HANDOFF.md` — added this entry and updated MCP tool counts/summary wording to include `refresh_signals()`
-
-### NOT Changed
-- No changes to trading execution semantics, strategy logic, or AIAnalyst rate-limit policy itself.
-- Existing Phase 3 handoff entries remain as historical records (they describe the state before this MCP signal split).
-
-### MCP API Note
-- `get_signals()` response shape changed from `list[signal]` to a snapshot object:
-  - `{"signals": [...], "source": "cache", "last_updated": <iso8601|null>, "freshness_seconds": <float|null>}`
-- `get_signals()` is now read-only (cached snapshot only).
-- Use `refresh_signals()` when a caller explicitly wants recomputation and accepts possible AI quota/API cost.
-- MCP clients that previously iterated `get_signals()` directly as a list must be updated to read `result["signals"]`.
-
-### Verification
-```bash
-uv run pytest tests/test_mcp_server.py -q                                    # 23 passed
-uv run ruff check src/polymarket_agent/mcp_server.py src/polymarket_agent/orchestrator.py tests/test_mcp_server.py   # All checks passed
-uv run mypy src/polymarket_agent/mcp_server.py src/polymarket_agent/orchestrator.py   # Success: no issues found in 2 source files
-```
-
-### Branch
-- Working branch: `main`
-
----
-
 ## Project Summary
 
 **Polymarket Agent** is a Python auto-trading pipeline for Polymarket prediction markets. It wraps the official `polymarket` CLI (v0.1.4, installed via Homebrew) into a structured system with pluggable trading strategies, paper/live execution, and MCP server integration for AI agents.
@@ -437,7 +405,8 @@ uv run mypy src/polymarket_agent/mcp_server.py src/polymarket_agent/orchestrator
 - MCP server with 14 tools: search_markets, get_market_detail, get_price_history, get_leaderboard, get_portfolio, get_signals, refresh_signals, place_trade, analyze_market, get_event, get_price, get_spread, get_volume, get_positions
 - LiveTrader with py-clob-client for real order execution
 - Risk management: max_position_size, max_daily_loss, max_open_orders enforced in Orchestrator
-- CLI commands: `run` (with `--live` safety flag), `status`, `tick`, `report`, `backtest`, `dashboard`, `mcp`
+- CLI commands: `run` (with `--live` safety flag + config hot-reload), `status`, `tick`, `report`, `evaluate`, `backtest`, `dashboard`, `mcp`
+- Auto-tune pipeline: `scripts/autotune.sh` + launchd plist for periodic Claude Code-driven config tuning
 
 ## Architecture
 
@@ -460,7 +429,7 @@ MCP Server (FastMCP, stdio) → AppContext → Orchestrator + Data + Config
 
 | File | Purpose |
 |------|---------|
-| `src/polymarket_agent/cli.py` | Typer CLI: `run`, `status`, `tick`, `report`, `backtest`, `dashboard`, `mcp` commands |
+| `src/polymarket_agent/cli.py` | Typer CLI: `run` (hot-reload), `status`, `tick`, `report`, `evaluate`, `backtest`, `dashboard`, `mcp` |
 | `src/polymarket_agent/orchestrator.py` | Main loop: fetch → analyze → aggregate → execute |
 | `src/polymarket_agent/config.py` | Pydantic config from YAML (incl. AggregationConfig) |
 | `src/polymarket_agent/data/models.py` | Market, Event, OrderBook, PricePoint, Trader, Spread, Volume, Position (Pydantic) |

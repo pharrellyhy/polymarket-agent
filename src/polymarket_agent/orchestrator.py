@@ -146,6 +146,11 @@ class Orchestrator:
         return self._db.get_trades()[:limit]
 
     @property
+    def poll_interval(self) -> int:
+        """Return the current poll interval from config."""
+        return self._config.poll_interval
+
+    @property
     def data(self) -> DataProvider:
         """Public access to the data client."""
         return self._data
@@ -195,6 +200,32 @@ class Orchestrator:
     def get_cached_signals_updated_at(self) -> datetime | None:
         """Return when cached signals were last refreshed."""
         return self._last_signals_updated_at
+
+    def reload_config(self, new_config: AppConfig) -> None:
+        """Hot-reload configuration without rebuilding the executor.
+
+        Safety: rejects mode changes (e.g. paper→live) to protect positions.
+        Rebuilds strategies, position sizer, and alert manager from new config.
+        The executor is preserved so in-memory positions remain intact.
+        """
+        if new_config.mode != self._config.mode:
+            logger.warning(
+                "[reload] Mode change rejected: %s → %s (restart required)",
+                self._config.mode,
+                new_config.mode,
+            )
+            return
+
+        self._config = new_config
+        self._strategies = self._load_strategies(new_config.strategies)
+        self._sizer = PositionSizer(
+            method=new_config.position_sizing.method,
+            kelly_fraction=new_config.position_sizing.kelly_fraction,
+            max_bet_pct=new_config.position_sizing.max_bet_pct,
+        )
+        self._alerts = self._build_alert_manager(new_config)
+        self._snapshot_interval = new_config.monitoring.snapshot_interval
+        logger.info("[reload] Config updated — %d strategies active", len(self._strategies))
 
     def close(self) -> None:
         """Release resources (database connection)."""

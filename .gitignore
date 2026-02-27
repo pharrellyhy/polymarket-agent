@@ -266,6 +266,7 @@ logs/
 
 outputs
 refs
+reviews
 
 # Database files
 *.db

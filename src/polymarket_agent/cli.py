@@ -10,7 +10,7 @@ from typing import Annotated
 import typer
 
 from polymarket_agent import __version__
-from polymarket_agent.config import AppConfig, load_config
+from polymarket_agent.config import AppConfig, config_mtime, load_config
 from polymarket_agent.orchestrator import Orchestrator
 
 logger = logging.getLogger(__name__)
@@ -82,8 +82,20 @@ def run(
 
     orch = Orchestrator(config=cfg, db_path=db)
     typer.echo(f"Starting polymarket-agent in {cfg.mode} mode (poll every {cfg.poll_interval}s)")
+    last_mtime = config_mtime(config)
     try:
         while True:
+            # Hot-reload config if file changed on disk
+            current_mtime = config_mtime(config)
+            if current_mtime != last_mtime and current_mtime > 0:
+                try:
+                    new_cfg = _load_config(config)
+                    orch.reload_config(new_cfg)
+                    cfg = new_cfg
+                    last_mtime = current_mtime
+                except Exception:
+                    logger.exception("[reload] Failed to reload config, continuing with previous")
+
             result = orch.tick()
             portfolio = orch.get_portfolio()
             typer.echo(
@@ -92,7 +104,7 @@ def run(
                 f"trades={result['trades_executed']} "
                 f"balance=${portfolio.balance:.2f}"
             )
-            time.sleep(cfg.poll_interval)
+            time.sleep(orch.poll_interval)
     except KeyboardInterrupt:
         typer.echo("\nStopped.")
     finally:
@@ -468,3 +480,277 @@ def mcp(
 
     configure(config_path=config, db_path=db)
     mcp_server.run()
+
+
+# ------------------------------------------------------------------
+# Evaluate command helpers
+# ------------------------------------------------------------------
+
+
+def _build_tunable_params(cfg: AppConfig) -> list[dict[str, object]]:
+    """Enumerate safe-to-tune parameters with path, current value, min/max, and description."""
+    params: list[dict[str, object]] = []
+
+    # Strategy-level parameters
+    for name, strat_cfg in cfg.strategies.items():
+        if "volume_threshold" in strat_cfg:
+            params.append({
+                "path": f"strategies.{name}.volume_threshold",
+                "current": strat_cfg["volume_threshold"],
+                "min": 500,
+                "max": 50000,
+                "description": f"Minimum 24h volume for {name} to consider a market",
+            })
+        if "price_move_threshold" in strat_cfg:
+            params.append({
+                "path": f"strategies.{name}.price_move_threshold",
+                "current": strat_cfg["price_move_threshold"],
+                "min": 0.01,
+                "max": 0.20,
+                "description": f"Minimum price deviation from fair value for {name}",
+            })
+        if "min_price" in strat_cfg:
+            params.append({
+                "path": f"strategies.{name}.min_price",
+                "current": strat_cfg["min_price"],
+                "min": 0.01,
+                "max": 0.50,
+                "description": f"Minimum token price filter for {name}",
+            })
+        if "spread" in strat_cfg:
+            params.append({
+                "path": f"strategies.{name}.spread",
+                "current": strat_cfg["spread"],
+                "min": 0.01,
+                "max": 0.20,
+                "description": f"Bid-ask spread target for {name}",
+            })
+        if "order_size" in strat_cfg:
+            params.append({
+                "path": f"strategies.{name}.order_size",
+                "current": strat_cfg["order_size"],
+                "min": 5,
+                "max": 500,
+                "description": f"Default order size (USDC) for {name}",
+            })
+        if "price_sum_tolerance" in strat_cfg:
+            params.append({
+                "path": f"strategies.{name}.price_sum_tolerance",
+                "current": strat_cfg["price_sum_tolerance"],
+                "min": 0.005,
+                "max": 0.05,
+                "description": f"Price sum deviation threshold for {name} arb detection",
+            })
+
+    # Aggregation parameters
+    params.append({
+        "path": "aggregation.min_confidence",
+        "current": cfg.aggregation.min_confidence,
+        "min": 0.1,
+        "max": 0.9,
+        "description": "Minimum confidence score to accept a signal",
+    })
+    params.append({
+        "path": "aggregation.min_strategies",
+        "current": cfg.aggregation.min_strategies,
+        "min": 1,
+        "max": 4,
+        "description": "Minimum number of strategies that must agree on a signal",
+    })
+
+    # Risk parameters
+    params.append({
+        "path": "risk.max_position_size",
+        "current": cfg.risk.max_position_size,
+        "min": 10,
+        "max": 1000,
+        "description": "Maximum size of a single position (USDC)",
+    })
+    params.append({
+        "path": "risk.max_daily_loss",
+        "current": cfg.risk.max_daily_loss,
+        "min": 10,
+        "max": 2000,
+        "description": "Maximum daily loss before halting trades (USDC)",
+    })
+
+    # Position sizing parameters
+    params.append({
+        "path": "position_sizing.kelly_fraction",
+        "current": cfg.position_sizing.kelly_fraction,
+        "min": 0.05,
+        "max": 0.50,
+        "description": "Fractional Kelly multiplier (lower = more conservative)",
+    })
+    params.append({
+        "path": "position_sizing.max_bet_pct",
+        "current": cfg.position_sizing.max_bet_pct,
+        "min": 0.01,
+        "max": 0.25,
+        "description": "Maximum bet as percentage of portfolio value",
+    })
+
+    # Conditional order parameters
+    if cfg.conditional_orders.enabled:
+        params.append({
+            "path": "conditional_orders.default_stop_loss_pct",
+            "current": cfg.conditional_orders.default_stop_loss_pct,
+            "min": 0.05,
+            "max": 0.50,
+            "description": "Default stop-loss percentage below entry price",
+        })
+        params.append({
+            "path": "conditional_orders.default_take_profit_pct",
+            "current": cfg.conditional_orders.default_take_profit_pct,
+            "min": 0.05,
+            "max": 1.00,
+            "description": "Default take-profit percentage above entry price",
+        })
+
+    return params
+
+
+def _analyze_trades(trades: list[dict[str, object]]) -> dict[str, object]:
+    """Compute trade analysis: round-trip counts, buy/sell splits, avg sizes."""
+    if not trades:
+        return {"total": 0, "buys": 0, "sells": 0, "round_trips": 0, "avg_size": 0.0}
+
+    buys = 0
+    sells = 0
+    total_size = 0.0
+    for trade in trades:
+        side = trade.get("side")
+        if side == "buy":
+            buys += 1
+        elif side == "sell":
+            sells += 1
+        total_size += float(str(trade.get("size", 0)))
+
+    # Approximate round-trips as min(buys, sells)
+    round_trips = min(buys, sells)
+
+    return {
+        "total": len(trades),
+        "buys": buys,
+        "sells": sells,
+        "round_trips": round_trips,
+        "avg_size": round(total_size / len(trades), 2),
+    }
+
+
+def _build_summary(metrics: object) -> str:
+    """Build a natural-language summary with diagnostic notes."""
+    total_return = getattr(metrics, "total_return", 0.0)
+    sharpe = getattr(metrics, "sharpe_ratio", 0.0)
+    win_rate = getattr(metrics, "win_rate", 0.0)
+    max_dd = getattr(metrics, "max_drawdown", 0.0)
+    total_trades = getattr(metrics, "total_trades", 0)
+
+    lines = [f"Total return: {total_return:+.1%}"]
+    lines.append(f"Sharpe ratio: {sharpe:.2f}")
+    lines.append(f"Win rate: {win_rate:.1%}")
+    lines.append(f"Max drawdown: {max_dd:.1%}")
+    lines.append(f"Total trades: {total_trades}")
+
+    # Diagnostic notes
+    notes: list[str] = []
+    if total_trades == 0:
+        notes.append("No trades executed — check if strategies are enabled and volume thresholds are reachable")
+    if win_rate < 0.45 and total_trades > 5:
+        notes.append("Win rate is low — consider raising aggregation.min_confidence or tightening entry criteria")
+    if sharpe < 0.5 and total_trades > 5:
+        notes.append("Sharpe ratio is low — consider reducing position sizes or raising confidence thresholds")
+    if max_dd > 0.15:
+        notes.append("Drawdown is high — consider lowering risk.max_position_size or enabling tighter stop-losses")
+    if total_return < 0 and total_trades > 5:
+        notes.append("Negative return — consider reducing risk.max_daily_loss or pausing aggressive strategies")
+
+    if notes:
+        lines.append("\nDiagnostic notes:")
+        for note in notes:
+            lines.append(f"  - {note}")
+
+    return "\n".join(lines)
+
+
+@app.command()
+def evaluate(
+    config: ConfigOption = DEFAULT_CONFIG,
+    db: DbOption = DEFAULT_DB,
+    period: Annotated[str, typer.Option("--period", "-p", help="Time period to evaluate (e.g. 24h, 7d)")] = "24h",
+    json_output: Annotated[bool, typer.Option("--json/--no-json", help="Output as JSON (default: true)")] = True,
+) -> None:
+    """Evaluate trading performance and output structured JSON for auto-tuning."""
+    from polymarket_agent.backtest.metrics import PortfolioSnapshot, compute_metrics  # noqa: PLC0415
+
+    cfg, orch = _build_orchestrator(config, db)
+    try:
+        cutoff = _parse_period(period)
+        since = cutoff.strftime("%Y-%m-%d %H:%M:%S")
+
+        trades = orch.db.get_trades(since=since)
+        snapshot_rows = orch.db.get_portfolio_snapshots(limit=10000, since=since)
+        snapshot_rows.reverse()
+
+        snapshots = [
+            PortfolioSnapshot(
+                timestamp=str(s.get("timestamp", "")),
+                balance=float(str(s.get("balance", 0))),
+                total_value=float(str(s.get("total_value", 0))),
+            )
+            for s in snapshot_rows
+        ]
+
+        metrics = compute_metrics(trades, snapshots, cfg.starting_balance)
+
+        # Per-strategy breakdown
+        strategy_breakdown: dict[str, dict[str, float | int]] = {}
+        for t in trades:
+            strat = str(t.get("strategy", "unknown"))
+            if strat not in strategy_breakdown:
+                strategy_breakdown[strat] = {"trades": 0, "net_pnl": 0.0}
+            strategy_breakdown[strat]["trades"] = int(strategy_breakdown[strat]["trades"]) + 1
+            size = float(str(t.get("size", 0)))
+            if t.get("side") == "sell":
+                strategy_breakdown[strat]["net_pnl"] = float(strategy_breakdown[strat]["net_pnl"]) + size
+            else:
+                strategy_breakdown[strat]["net_pnl"] = float(strategy_breakdown[strat]["net_pnl"]) - size
+
+        trade_analysis = _analyze_trades(trades)
+        tunable_params = _build_tunable_params(cfg)
+        summary = _build_summary(metrics)
+
+        # Serialize current config to dict
+        current_config = _json.loads(cfg.model_dump_json())
+
+        payload = {
+            "metrics": {
+                "total_return": metrics.total_return,
+                "sharpe_ratio": metrics.sharpe_ratio,
+                "max_drawdown": metrics.max_drawdown,
+                "win_rate": metrics.win_rate,
+                "profit_factor": metrics.profit_factor,
+                "total_trades": metrics.total_trades,
+            },
+            "strategy_breakdown": strategy_breakdown,
+            "trade_analysis": trade_analysis,
+            "current_config": current_config,
+            "tunable_parameters": tunable_params,
+            "config_file_path": str(config.resolve()),
+            "safety_constraints": {
+                "mode_locked": True,
+                "explanation": (
+                    "Never change the 'mode' field. The trading loop will reject mode changes. "
+                    "Only adjust parameters listed in tunable_parameters, respecting min/max ranges."
+                ),
+            },
+            "summary": summary,
+        }
+
+        if json_output:
+            typer.echo(_json.dumps(payload, indent=2, default=str))
+        else:
+            typer.echo(f"\n=== Evaluation ({period}) ===\n")
+            typer.echo(summary)
+    finally:
+        orch.close()

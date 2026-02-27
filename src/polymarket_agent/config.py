@@ -76,3 +76,11 @@ class AppConfig(BaseModel):
 def load_config(path: Path) -> AppConfig:
     """Load config from a YAML file."""
     return AppConfig(**yaml.safe_load(path.read_text()))
+
+
+def config_mtime(path: Path) -> float:
+    """Return the modification time of a config file, or 0.0 if it doesn't exist."""
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
