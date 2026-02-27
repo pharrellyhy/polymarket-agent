@@ -5,6 +5,7 @@ This file provides guidance to Claude Code when working with the Polymarket Agen
 ## Behavioral Rules
 
 - **DO NOT** mention Claude as code generator or code co-author in commits, comments, or docs
+- **Plan before you code** — before starting any implementation work, write a design plan or implementation plan in `docs/plans/` first. No code changes until a plan document exists and covers the approach
 
 ## Project Overview
 
@@ -76,6 +77,7 @@ Main loop: fetch data → run strategies → aggregate signals → execute trade
 
 ## Code Style
 
+- **No `__future__` imports** — this project targets Python 3.12+ exclusively, so `from __future__ import annotations` and other `__future__` imports are unnecessary and should not be used
 - **Python 3.12+** compatible
 - **Type hints** required on all functions and methods
 - **Classes:** PascalCase (e.g., `PaperTrader`)

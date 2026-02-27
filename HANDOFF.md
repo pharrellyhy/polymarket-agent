@@ -4,6 +4,86 @@ Last updated: 2026-02-27
 
 ---
 
+## Session Entry — 2026-02-27 (Review Follow-Up: Exit Manager Numeric Robustness)
+
+### Problem
+- Review of the newest Exit Manager additions found a robustness gap: `ExitManager.evaluate()` and `_check_exit()` assumed numeric `avg_price`/`shares` values.
+- If recovered or externally mutated position metadata contains malformed numeric strings (for example `"avg_price": "bad"`), exit evaluation raises `ValueError` and can break the tick cycle.
+
+### Solution
+- **TDD regression coverage first:** Added failing tests for malformed `avg_price` and malformed `shares` in exit-manager position payloads.
+- **Safe numeric parsing:** Added `_as_float(...)` helper and switched relevant parsing paths to skip malformed positions instead of raising:
+  - `evaluate()` shares parsing
+  - `_check_exit()` average price parsing
+  - `_check_signal_reversal()` arbitrage average price parsing
+- **Behavior preserved:** Valid positions and rule priority/threshold behavior remain unchanged.
+
+### Edits
+- `src/polymarket_agent/strategies/exit_manager.py` — added `_as_float(...)` and hardened numeric parsing in exit evaluation paths
+- `tests/test_exit_manager.py` — added `TestMalformedPositionData` with 2 regression tests
+- `HANDOFF.md` — added this review follow-up entry
+
+### NOT Changed
+- No changes to exit rule thresholds, ordering, or signal schema.
+- No orchestrator, DB, or paper execution logic changes in this follow-up.
+
+### Verification
+```bash
+uv run python -m pytest tests/test_exit_manager.py -q   # 13 passed
+./.venv/bin/ruff check src/polymarket_agent/strategies/exit_manager.py tests/test_exit_manager.py   # All checks passed
+./.venv/bin/mypy src/polymarket_agent/strategies/exit_manager.py   # Success: no issues found in 1 source file
+```
+
+### Branch
+- Working branch: `main`
+
+---
+
+## Session Entry — 2026-02-27 (Exit Manager: Position Exit Logic)
+
+### Problem
+- The paper trading bot got permanently stuck once positions filled up. Strategies only generated buy/entry signals. The risk gate rejected all buy signals for held positions ("already holding position"). No mechanism existed to generate sell signals, so positions never closed. Conditional orders had 50% bands that rarely triggered.
+
+### Solution
+- **ExitManagerConfig (Task 1):** Added `ExitManagerConfig` Pydantic model to `config.py` with fields: `enabled`, `profit_target_pct` (0.15), `stop_loss_pct` (0.12), `signal_reversal` (true), `max_hold_hours` (24). Tightened conditional order bands from 50% to 12-15%.
+- **Position metadata (Task 2):** Added `opened_at` (ISO timestamp) and `entry_strategy` (strategy name) to PaperTrader position dicts. Backfills sensible defaults for positions recovered from DB snapshots.
+- **ExitManager class (Task 3):** New `strategies/exit_manager.py` with 4 exit rules evaluated in priority order (first match wins): profit target (+15%), stop loss (-12%), signal reversal (entry thesis invalidated), stale position (held >24h). Returns sell `Signal` objects.
+- **Orchestrator integration (Task 4):** ExitManager runs in `tick()` after entry strategies. Exit signals execute before entries, bypass risk gate/position sizing/aggregator. `_evaluate_exits()` helper fetches bid prices for held positions. ExitManager rebuilt on config hot-reload.
+- **Full verification (Tasks 5-6):** 333 tests pass, ruff clean, mypy clean. DB reset + end-to-end tick verified fresh buys execute and exit rules evaluate correctly.
+
+### Edits
+- `src/polymarket_agent/config.py` — added `ExitManagerConfig` model, wired into `AppConfig`
+- `config.yaml` — added `exit_manager` section; tightened `conditional_orders.default_stop_loss_pct` (0.5→0.12) and `default_take_profit_pct` (0.5→0.15)
+- `src/polymarket_agent/execution/paper.py` — added `opened_at`/`entry_strategy` to `_execute_buy`; backfill in `recover_from_db()`
+- `src/polymarket_agent/strategies/exit_manager.py` — **NEW** ExitManager with 4 exit rules
+- `src/polymarket_agent/orchestrator.py` — integrated ExitManager into `tick()` loop; added `_evaluate_exits()` helper; rebuild on `reload_config()`
+- `tests/test_config.py` — added `test_exit_manager_config_defaults`
+- `tests/test_paper_trader.py` — added 2 metadata tests (buy sets metadata, recover backfills)
+- `tests/test_exit_manager.py` — **NEW** 11 tests across 6 test classes (profit target, stop loss, signal reversal, staleness, disabled, priority)
+- `tests/test_orchestrator.py` — added `test_orchestrator_exit_manager_generates_sells`
+- `docs/plans/2026-02-27-exit-manager-design.md` — **NEW** design document
+- `docs/plans/2026-02-27-exit-manager-plan.md` — **NEW** implementation plan
+
+### NOT Changed
+- No changes to entry signal pipeline (risk gate, position sizing, aggregation all preserved)
+- No changes to strategy implementations (SignalTrader, Arbitrageur, etc.)
+- No changes to data layer, MCP server, or live trader
+- No changes to existing tests or their assertions
+
+### Verification
+```bash
+uv run pytest tests/ -v              # 333 passed
+ruff check src/                       # All checks passed
+uv run mypy src/                      # Success: no issues found in 35 source files
+uv run polymarket-agent tick          # 7 trades executed on fresh DB
+uv run polymarket-agent status        # Shows 7 positions with P&L
+```
+
+### Branch
+- Working branch: `main`
+
+---
+
 ## Session Entry — 2026-02-27 (Review Follow-Up: Provider Validation Hardening)
 
 ### Problem
@@ -306,87 +386,13 @@ uv run mypy src/polymarket_agent/orchestrator.py src/polymarket_agent/execution/
 
 ---
 
-## Session Entry — 2026-02-27 (Performance Monitoring & Position Persistence)
-
-### Problem
-- PaperTrader positions were lost on restart (kept in memory only).
-- `status` command showed zero positions after restart.
-- No `report` command for performance evaluation.
-- Portfolio snapshots only recorded every 300s (configurable), missing state changes when trades occurred.
-
-### Solution
-- **Position persistence (Step 1):** Added `recover_from_db()` to PaperTrader that restores `_positions` and `_balance` from the latest `portfolio_snapshots` row. Called automatically during orchestrator init for paper mode.
-- **Force-snapshot on trade (Step 2):** After trades execute in `tick()`, `_force_portfolio_snapshot()` writes an immediate snapshot (bypassing the interval throttle) so every portfolio state change is captured. Extracted shared `_write_portfolio_snapshot()` helper.
-- **Report command (Step 3):** New `polymarket-agent report` CLI command with `--period` (e.g. `24h`, `7d`) and `--json` flags. Computes metrics via `backtest/metrics.py`, shows portfolio summary, open position P&L with current prices, per-strategy breakdown, and recent trades.
-- **Enhanced status (Step 4):** `status` command now shows a position table with shares, entry price, current price, unrealized P&L, and P&L%.
-- **DB helpers:** Added `get_latest_snapshot()` method and `since` filter parameter to `get_trades()` and `get_portfolio_snapshots()`.
-
-### Edits
-- `src/polymarket_agent/db.py` — added `get_latest_snapshot()`, `since` filter on `get_trades()` and `get_portfolio_snapshots()`
-- `src/polymarket_agent/execution/paper.py` — added `recover_from_db()` method with JSON position parsing
-- `src/polymarket_agent/orchestrator.py` — call `recover_from_db()` in `_build_executor()` for paper mode; added `_force_portfolio_snapshot()` and `_write_portfolio_snapshot()`; force snapshot after trades in `tick()`
-- `src/polymarket_agent/cli.py` — added `report` command with `_parse_period()` helper; enhanced `status` with position P&L table
-- `tests/test_risk_gate.py` — fixed `test_risk_gate_blocks_when_daily_loss_exceeded` to use distinct token IDs (position recovery now catches duplicate-token buys earlier)
-
-### NOT Changed
-- No changes to strategies, MCP server, backtest engine, or live trader.
-- Pre-existing `test_paper_trader_sell_insufficient_shares` failure left as-is (test expects rejection, but code intentionally sells all available shares).
-
-### Verification
-```bash
-uv run pytest tests/ -v           # 254 passed, 1 pre-existing failure
-uv run ruff check src/            # All checks passed
-uv run ruff format --check src/   # All files formatted
-uv run polymarket-agent report --help   # Shows report command
-uv run polymarket-agent status --help   # Shows status command
-```
-
-### Branch
-- Working branch: `main`
-
----
-
-## Session Entry — 2026-02-26 (Review Follow-Up: MCP get_event Error Handling + Wrapper Simplification)
-
-### Problem
-- Reviewed the newly added code from the top handoff entry (`Known Issues Fix + MCP Data Tools`).
-- Found an inconsistency in the new MCP wrappers: `get_event()` handled "not found" but did not handle CLI `RuntimeError`, despite the handoff claiming consistent CLI-failure handling across the new MCP tools.
-- The new MCP wrappers also repeated near-identical `try/except RuntimeError` blocks.
-
-### Solution
-- **TDD regression fix:** Added a failing MCP test for `get_event()` CLI failure handling, verified the failure, then implemented the fix.
-- **`get_event()` CLI failure handling:** `get_event()` now returns `{"error": ...}` on `RuntimeError` instead of propagating an exception.
-- **Wrapper simplification:** Added `_runtime_safe_tool(...)` helper in `mcp_server.py` and applied it to `get_event`, `get_price`, `get_spread`, `get_volume`, and `get_positions` to remove duplicated `try/except` blocks while preserving existing payload shapes.
-- **Test import cleanup:** Consolidated `tests/test_mcp_server.py` imports to satisfy Ruff after the new test addition.
-
-### Edits
-- `src/polymarket_agent/mcp_server.py` — fixed `get_event()` runtime-error handling; added `_runtime_safe_tool()` helper; simplified new MCP wrapper error handling
-- `tests/test_mcp_server.py` — added `get_event()` CLI failure regression test; consolidated import block
-- `HANDOFF.md` — added this review follow-up entry; removed oldest session entry to keep last 10 entries
-
-### NOT Changed
-- No changes to the newly added CLI/config, order book, Signal docstring, SignalTrader, or PaperTrader sell-side logic from the reviewed handoff entry.
-- MCP tool response shapes remain unchanged, except `get_event()` now returns an error payload instead of raising on CLI failure.
-
-### Verification
-```bash
-uv run python -m pytest tests/test_mcp_server.py -q   # 35 passed
-uv run ruff check src/polymarket_agent/mcp_server.py tests/test_mcp_server.py   # All checks passed
-uv run mypy src/polymarket_agent/mcp_server.py   # Success: no issues found in 1 source file
-```
-
-### Branch
-- Working branch: `main`
-
----
-
 ## Project Summary
 
 **Polymarket Agent** is a Python auto-trading pipeline for Polymarket prediction markets. It wraps the official `polymarket` CLI (v0.1.4, installed via Homebrew) into a structured system with pluggable trading strategies, paper/live execution, and MCP server integration for AI agents.
 
 ## Current State: Phase 4 COMPLETE
 
-- 141 tests passing, ruff lint clean, mypy strict clean (21 source files)
+- 333 tests passing, ruff lint clean, mypy strict clean (35 source files)
 - All 4 strategies implemented: SignalTrader, MarketMaker, Arbitrageur, AIAnalyst
 - Signal aggregation integrated (groups by market+token+side, unique strategy consensus)
 - MCP server with 14 tools: search_markets, get_market_detail, get_price_history, get_leaderboard, get_portfolio, get_signals, refresh_signals, place_trade, analyze_market, get_event, get_price, get_spread, get_volume, get_positions
@@ -394,6 +400,7 @@ uv run mypy src/polymarket_agent/mcp_server.py   # Success: no issues found in 1
 - Risk management: max_position_size, max_daily_loss, max_open_orders enforced in Orchestrator
 - CLI commands: `run` (with `--live` safety flag + config hot-reload), `status`, `tick`, `report`, `evaluate`, `backtest`, `dashboard`, `mcp`
 - Auto-tune pipeline: `scripts/autotune.sh` + launchd plist for periodic Claude Code-driven config tuning
+- Exit manager: automatic position exits via profit target, stop loss, signal reversal, and staleness rules
 
 ## Architecture
 
@@ -428,6 +435,7 @@ MCP Server (FastMCP, stdio) → AppContext → Orchestrator + Data + Config
 | `src/polymarket_agent/strategies/market_maker.py` | Bid/ask around orderbook midpoint |
 | `src/polymarket_agent/strategies/arbitrageur.py` | Price-sum deviation detection |
 | `src/polymarket_agent/strategies/ai_analyst.py` | Claude probability estimates + divergence trading |
+| `src/polymarket_agent/strategies/exit_manager.py` | ExitManager: generates sell signals for held positions (4 exit rules) |
 | `src/polymarket_agent/strategies/aggregator.py` | Signal dedup, confidence filtering, consensus |
 | `src/polymarket_agent/execution/base.py` | Executor ABC + Portfolio + Order + cancel_order/get_open_orders |
 | `src/polymarket_agent/execution/paper.py` | Paper trading with virtual USDC |
@@ -547,14 +555,16 @@ See `docs/plans/2026-02-26-polymarket-agent-phase3.md` for detailed plan with 6 
 - `docs/plans/2026-02-25-polymarket-agent-phase1.md` — Phase 1 implementation plan (COMPLETE)
 - `docs/plans/2026-02-25-polymarket-agent-phase2.md` — Phase 2 implementation plan (COMPLETE)
 - `docs/plans/2026-02-26-polymarket-agent-phase3.md` — Phase 3 implementation plan (COMPLETE)
+- `docs/plans/2026-02-27-exit-manager-design.md` — Exit manager design document
+- `docs/plans/2026-02-27-exit-manager-plan.md` — Exit manager implementation plan
 
 ## Verification Commands
 
 ```bash
 # Everything should pass
-uv run pytest tests/ -v           # 141 tests passing
+uv run pytest tests/ -v           # 333 tests passing
 uv run ruff check src/            # All checks passed
-uv run mypy src/                  # Success: no issues found in 21 source files
+uv run mypy src/                  # Success: no issues found in 35 source files
 uv run polymarket-agent tick      # Fetches live data, paper trades
 uv run polymarket-agent mcp       # Starts MCP server (stdio transport)
 uv run polymarket-agent run --live  # Live trading (requires POLYMARKET_PRIVATE_KEY)

@@ -14,6 +14,14 @@ logger = logging.getLogger(__name__)
 _MIDPOINT = 0.5
 
 
+def _as_float(value: Any) -> float | None:
+    """Best-effort numeric conversion for persisted position fields."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 class ExitManager:
     """Evaluate held positions and generate sell signals when exit conditions are met.
 
@@ -46,8 +54,8 @@ class ExitManager:
             if reason is None:
                 continue
 
-            shares = float(pos.get("shares", 0))
-            if shares <= 0:
+            shares = _as_float(pos.get("shares", 0))
+            if shares is None or shares <= 0:
                 continue
 
             size = shares * current_price
@@ -67,8 +75,8 @@ class ExitManager:
 
     def _check_exit(self, pos: dict[str, Any], current_price: float) -> str | None:
         """Check exit rules in priority order. Return reason string or None."""
-        avg_price = float(pos.get("avg_price", 0))
-        if avg_price <= 0:
+        avg_price = _as_float(pos.get("avg_price", 0))
+        if avg_price is None or avg_price <= 0:
             return None
 
         # Rule 1: Profit target
@@ -114,8 +122,8 @@ class ExitManager:
         if entry_strategy == "arbitrageur":
             # Arbitrageur buys underpriced side. If price has normalized, exit.
             # We approximate: if current price is within 2% of avg_price, the arb closed.
-            avg_price = float(pos.get("avg_price", 0))
-            if avg_price > 0 and abs(current_price - avg_price) / avg_price < 0.02:
+            avg_price = _as_float(pos.get("avg_price", 0))
+            if avg_price is not None and avg_price > 0 and abs(current_price - avg_price) / avg_price < 0.02:
                 return f"signal_reversal: arb deviation closed (entry={avg_price:.4f}, current={current_price:.4f})"
 
         return None

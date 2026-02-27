@@ -3,6 +3,7 @@
 from datetime import datetime, timedelta, timezone
 
 import pytest
+
 from polymarket_agent.config import ExitManagerConfig
 from polymarket_agent.strategies.exit_manager import ExitManager
 
@@ -141,6 +142,20 @@ class TestDisabled:
         signals = em.evaluate({token_id: pos}, current_prices)
 
         assert len(signals) == 0
+
+
+class TestMalformedPositionData:
+    def test_malformed_avg_price_is_skipped(self, exit_manager: ExitManager) -> None:
+        token_id, pos = _make_position()
+        pos["avg_price"] = "bad"
+        signals = exit_manager.evaluate({token_id: pos}, {token_id: 0.5})
+        assert signals == []
+
+    def test_malformed_shares_is_skipped(self, exit_manager: ExitManager) -> None:
+        token_id, pos = _make_position()
+        pos["shares"] = "bad"
+        signals = exit_manager.evaluate({token_id: pos}, {token_id: 0.5})
+        assert signals == []
 
 
 class TestPriority:
