@@ -87,6 +87,7 @@ class FocusConfig(BaseModel):
     search_queries: list[str] = Field(default_factory=list)
     market_ids: list[str] = Field(default_factory=list)
     market_slugs: list[str] = Field(default_factory=list)
+    max_brackets: int = 5
 
 
 class AppConfig(BaseModel):

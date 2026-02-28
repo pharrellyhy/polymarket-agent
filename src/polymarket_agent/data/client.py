@@ -142,23 +142,28 @@ class PolymarketData:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _run_cli(self, args: list[str], *, timeout: float = 30.0) -> str:
+    def _run_cli(self, args: list[str], *, timeout: float = 30.0, retries: int = 3) -> str:
         """Execute a ``polymarket`` CLI command and return its stdout.
 
-        Raises :class:`RuntimeError` when the process exits with a
-        non-zero return code or times out.
+        Retries on transient failures. Raises :class:`RuntimeError` when
+        all attempts fail or the process times out.
         """
-        try:
-            result = subprocess.run(  # noqa: S603
-                args, capture_output=True, text=True, check=False, timeout=timeout
-            )
-        except subprocess.TimeoutExpired as exc:
-            msg = f"polymarket CLI timed out after {timeout}s: {' '.join(args)}"
-            raise RuntimeError(msg) from exc
-        if result.returncode != 0:
-            msg = f"polymarket CLI failed (rc={result.returncode}): {result.stderr}"
-            raise RuntimeError(msg)
-        return result.stdout
+        import time as _time
+
+        for attempt in range(retries):
+            try:
+                result = subprocess.run(  # noqa: S603
+                    args, capture_output=True, text=True, check=False, timeout=timeout
+                )
+            except subprocess.TimeoutExpired as exc:
+                msg = f"polymarket CLI timed out after {timeout}s: {' '.join(args)}"
+                raise RuntimeError(msg) from exc
+            if result.returncode == 0:
+                return result.stdout
+            if attempt < retries - 1:
+                _time.sleep(1)
+        msg = f"polymarket CLI failed (rc={result.returncode}): {result.stderr}"
+        raise RuntimeError(msg)
 
     def _run_cli_cached(self, key: str, args: list[str]) -> str:
         """Return cached CLI output or execute and cache the result."""

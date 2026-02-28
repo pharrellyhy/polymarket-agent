@@ -1074,6 +1074,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "python-dotenv" },
     { name = "pyyaml" },
+    { name = "tavily-python" },
     { name = "typer" },
 ]
 
@@ -1115,6 +1116,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.0" },
     { name = "python-dotenv", specifier = ">=1.0" },
     { name = "pyyaml", specifier = ">=6.0" },
+    { name = "tavily-python", specifier = ">=0.7.22" },
     { name = "tavily-python", marker = "extra == 'tavily'", specifier = ">=0.5" },
     { name = "typer", specifier = ">=0.9" },
     { name = "uvicorn", marker = "extra == 'dashboard'", specifier = ">=0.29" },

@@ -90,8 +90,8 @@ def test_orchestrator_place_order_applies_risk_gate(mocker: object) -> None:
         assert orch.get_portfolio().balance == config.starting_balance
 
 
-def test_risk_gate_blocks_when_daily_loss_exceeded(mocker: object) -> None:
-    """After enough buy trades, daily loss gate triggers."""
+def test_risk_gate_skips_daily_loss_in_paper_mode(mocker: object) -> None:
+    """Paper mode bypasses daily loss gate to allow faster iteration."""
     mocker.patch("polymarket_agent.data.client.subprocess.run", side_effect=_mock_run)  # type: ignore[union-attr]
     with tempfile.TemporaryDirectory() as tmpdir:
         config = AppConfig(
@@ -101,13 +101,13 @@ def test_risk_gate_blocks_when_daily_loss_exceeded(mocker: object) -> None:
         )
         orch = Orchestrator(config=config, db_path=Path(tmpdir) / "test.db")
 
-        # Execute two buy trades on different tokens totaling $50 (exceeds max_daily_loss=30)
+        # Execute two buy trades totaling $50 (exceeds max_daily_loss=30)
         orch._executor.place_order(_make_signal_with_token("0xtok_a", size=25.0))
         orch._executor.place_order(_make_signal_with_token("0xtok_b", size=25.0))
 
+        # Paper mode should NOT block — daily loss is bypassed
         rejection = orch._check_risk(_make_signal_with_token("0xtok_c", size=10.0))
-        assert rejection is not None
-        assert "daily_loss" in rejection
+        assert rejection is None
 
 
 def test_risk_gate_integrated_in_tick(mocker: object) -> None:

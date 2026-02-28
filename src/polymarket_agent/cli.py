@@ -96,14 +96,17 @@ def run(
                 except Exception:
                     logger.exception("[reload] Failed to reload config, continuing with previous")
 
-            result = orch.tick()
-            portfolio = orch.get_portfolio()
-            typer.echo(
-                f"[{cfg.mode}] markets={result['markets_fetched']} "
-                f"signals={result['signals_generated']} "
-                f"trades={result['trades_executed']} "
-                f"balance=${portfolio.balance:.2f}"
-            )
+            try:
+                result = orch.tick()
+                portfolio = orch.get_portfolio()
+                typer.echo(
+                    f"[{cfg.mode}] markets={result['markets_fetched']} "
+                    f"signals={result['signals_generated']} "
+                    f"trades={result['trades_executed']} "
+                    f"balance=${portfolio.balance:.2f}"
+                )
+            except Exception:
+                logger.exception("Tick failed, retrying next interval")
             time.sleep(orch.poll_interval)
     except KeyboardInterrupt:
         typer.echo("\nStopped.")

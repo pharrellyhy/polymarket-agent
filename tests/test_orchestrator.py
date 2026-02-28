@@ -4,6 +4,7 @@ import json
 import subprocess
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 from polymarket_agent.config import AppConfig
 from polymarket_agent.data.models import Market
@@ -156,3 +157,62 @@ def test_focus_filter_normalizes_slug_and_query_whitespace(mocker: object) -> No
 
         assert len(filtered) == 1
         assert filtered[0].id == "100"
+
+
+def test_focus_filter_does_not_limit_explicit_market_ids(mocker: object) -> None:
+    """max_brackets should not truncate explicit ID-targeted focus lists."""
+    mocker.patch("polymarket_agent.data.client.subprocess.run", side_effect=_mock_run)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        market_ids = [str(i) for i in range(1, 7)]
+        config = AppConfig(
+            mode="paper",
+            strategies={},
+            focus={"enabled": True, "market_ids": market_ids, "max_brackets": 2},
+        )
+        orch = Orchestrator(config=config, db_path=Path(tmpdir) / "test.db")
+        markets = [_make_market(market_id=market_id, question=f"Q {market_id}") for market_id in market_ids]
+
+        filtered = orch._apply_focus_filter(markets)
+
+        assert len(filtered) == len(market_ids)
+        assert {market.id for market in filtered} == set(market_ids)
+
+
+def test_fetch_focus_markets_from_api_skips_malformed_rows() -> None:
+    """Gamma fallback should skip malformed market rows instead of dropping the whole response."""
+    payload = json.dumps(
+        [
+            {
+                "markets": [
+                    {"id": "bad-row"},
+                    {
+                        "id": "good-1",
+                        "question": "Will it rain?",
+                        "outcomes": '["Yes","No"]',
+                        "outcomePrices": '["0.3","0.7"]',
+                        "volume": "1234",
+                        "liquidity": "567",
+                        "active": True,
+                        "closed": False,
+                        "clobTokenIds": '["0xtok1","0xtok2"]',
+                    },
+                ]
+            }
+        ]
+    ).encode()
+
+    class _Response:
+        def __enter__(self) -> "_Response":
+            return self
+
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> bool:
+            return False
+
+        def read(self) -> bytes:
+            return payload
+
+    with patch("urllib.request.urlopen", return_value=_Response()):
+        markets = Orchestrator._fetch_focus_markets_from_api(["will-it-rain"])
+
+    assert len(markets) == 1
+    assert markets[0].id == "good-1"

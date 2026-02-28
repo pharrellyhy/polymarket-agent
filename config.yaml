@@ -1,7 +1,7 @@
 # Auto-tuned on 2026-02-27
 mode: paper
-starting_balance: 1000.0
-poll_interval: 60
+starting_balance: 100.0
+poll_interval: 10
 strategies:
   signal_trader:
     enabled: false
@@ -20,10 +20,10 @@ strategies:
   ai_analyst:
     enabled: true
     model: qwen/qwen3.5-35b-a3b
-    max_calls_per_hour: 20
-    min_divergence: 0.15
-    min_price: 0.05
-    order_size: 25.0
+    max_calls_per_hour: 200
+    min_divergence: 0.01
+    min_price: 0.0
+    order_size: 5.0
     provider: openai
     # base_url: https://api.shubiaobiao.cn/v1
     # api_key_env: OPENAI_API_KEY
@@ -37,7 +37,7 @@ strategies:
     history_fidelity: 60
     order_size: 25.0
 aggregation:
-  min_confidence: 0.3
+  min_confidence: 0.01
   min_strategies: 1
 risk:
   max_position_size: 200.0
@@ -50,7 +50,7 @@ conditional_orders:
   trailing_stop_enabled: false
   trailing_stop_pct: 0.05
 position_sizing:
-  method: fractional_kelly
+  method: fixed
   kelly_fraction: 0.25
   max_bet_pct: 0.1
 backtest:
@@ -64,15 +64,16 @@ exit_manager:
   max_hold_hours: 24
 news:
   enabled: true
-  provider: google_rss
+  provider: tavily
   api_key_env: TAVILY_API_KEY
-  max_calls_per_hour: 50
-  cache_ttl: 900
+  max_calls_per_hour: 100
+  cache_ttl: 600
   max_results: 5
 focus:
-  enabled: false
+  enabled: true
   search_queries:
-    - "Elon Musk"
+    - "US strikes Iran"
+  max_brackets: 5
 monitoring:
   structured_logging: false
   log_file: null

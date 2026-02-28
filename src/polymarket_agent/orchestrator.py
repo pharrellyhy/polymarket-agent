@@ -282,6 +282,7 @@ class Orchestrator:
         """Filter markets to only those matching the focus config (OR logic).
 
         Returns markets unchanged when focus is disabled.
+        When CLI results don't contain matches, falls back to the Gamma API.
         """
         focus = self._config.focus
         if not focus.enabled:
@@ -299,8 +300,62 @@ class Orchestrator:
             question = market.question.lower()
             if market.id in ids or market.slug.lower() in slugs or any(query in question for query in queries):
                 filtered.append(market)
+
+        # Fallback: if CLI results had no matches, try the Gamma API directly
+        if not filtered and queries:
+            filtered = self._fetch_focus_markets_from_api(queries)
+
+        # Limit to nearest N brackets (sorted by end_date).
+        # Only apply to query-driven focus to avoid truncating explicit ID/slug lists.
+        max_brackets = focus.max_brackets
+        has_explicit_selectors = bool(ids or slugs)
+        if not has_explicit_selectors and max_brackets > 0 and len(filtered) > max_brackets:
+            filtered.sort(key=lambda m: m.end_date or "9999")
+            filtered = filtered[:max_brackets]
+
         logger.info("Focus filter: %d → %d markets", len(markets), len(filtered))
         return filtered
+
+    @staticmethod
+    def _fetch_focus_markets_from_api(queries: list[str]) -> list[Market]:
+        """Fetch markets from the Gamma API when the CLI doesn't return matches.
+
+        Converts search queries into slugs and tries both event-slug and
+        market-text matching via the Gamma API.
+        """
+        import re
+        import urllib.request
+
+        all_markets: dict[str, Market] = {}
+        headers = {"User-Agent": "polymarket-agent/1.0"}
+
+        for query in queries:
+            # Try event slug lookup first (e.g. "US strikes Iran" -> "us-strikes-iran")
+            slug = re.sub(r"[^a-z0-9]+", "-", query.lower()).strip("-")
+            # Append common suffixes for bracket events
+            for slug_variant in [slug, f"{slug}-by", f"{slug}-in"]:
+                url = f"https://gamma-api.polymarket.com/events?slug={slug_variant}"
+                try:
+                    req = urllib.request.Request(url, headers=headers)
+                    with urllib.request.urlopen(req, timeout=15) as resp:  # noqa: S310
+                        events = json.loads(resp.read().decode())
+                    for event in events:
+                        for item in event.get("markets", []):
+                            try:
+                                market = Market.from_cli(item)
+                            except (KeyError, TypeError, ValueError):
+                                continue
+                            if market.active and not market.closed:
+                                all_markets[market.id] = market
+                    if all_markets:
+                        break
+                except Exception:
+                    continue
+
+            if not all_markets:
+                logger.warning("Gamma API: no markets found for query %r", query)
+
+        return list(all_markets.values())
 
     # ------------------------------------------------------------------
     # Conditional orders
@@ -529,7 +584,7 @@ class Orchestrator:
 
         snapshot = risk_snapshot if risk_snapshot is not None else self._build_risk_snapshot()
         daily_loss = snapshot.daily_loss
-        if daily_loss >= risk.max_daily_loss:
+        if daily_loss >= risk.max_daily_loss and self._config.mode != "paper":
             return f"daily_loss {daily_loss:.2f} >= max_daily_loss {risk.max_daily_loss}"
 
         open_count = snapshot.open_orders

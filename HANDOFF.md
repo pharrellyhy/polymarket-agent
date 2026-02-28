@@ -4,6 +4,88 @@ Last updated: 2026-02-28
 
 ---
 
+## Session Entry — 2026-02-28 (Review Follow-Up: Focus Limit Scope + Gamma Parsing Robustness)
+
+### Problem
+- Review of the latest focus fallback changes found two behavior risks:
+  - `focus.max_brackets` truncated results even when the operator explicitly selected markets via `market_ids`/`market_slugs`.
+  - Gamma fallback parsing could drop an entire response when one malformed market row raised during `Market.from_cli(...)`.
+
+### Solution
+- **Scoped bracket limiting:** Kept `max_brackets` for query-driven discovery, but skipped truncation when explicit selectors (`market_ids` or `market_slugs`) are present.
+- **Robust Gamma row handling:** In `_fetch_focus_markets_from_api()`, parse each market row with per-item error handling so malformed rows are skipped while valid rows are still accepted.
+- **TDD regression coverage:** Added two failing orchestrator tests first, then implemented the minimal fix.
+
+### Edits
+- `src/polymarket_agent/orchestrator.py` — limited `max_brackets` enforcement to non-explicit focus selectors; hardened Gamma market parsing to skip malformed rows
+- `tests/test_orchestrator.py` — added:
+  - `test_focus_filter_does_not_limit_explicit_market_ids`
+  - `test_fetch_focus_markets_from_api_skips_malformed_rows`
+
+### NOT Changed
+- No changes to strategy logic, order execution, or DB schema.
+- No changes to config defaults or polling/risk thresholds.
+- No changes to CLI command behavior outside focus filtering internals.
+
+### Verification
+```bash
+uv run python -m pytest tests/test_orchestrator.py::test_focus_filter_does_not_limit_explicit_market_ids tests/test_orchestrator.py::test_fetch_focus_markets_from_api_skips_malformed_rows -q  # failed first, then passed after fix
+uv run python -m pytest tests/test_orchestrator.py -q  # 8 passed
+ruff check src/polymarket_agent/orchestrator.py tests/test_orchestrator.py  # All checks passed
+uv run mypy src/polymarket_agent/orchestrator.py  # Success: no issues found in 1 source file
+```
+
+### Branch
+- Working branch: `main`
+
+---
+
+## Session Entry — 2026-02-28 (CLI Resilience, Gamma API Fallback, Paper Mode Tuning)
+
+### Problem
+- The `polymarket` CLI intermittently failed with exit code 1, crashing the entire trading loop on transient errors.
+- The focus filter only searched CLI results (top ~50 markets by volume), so niche events like "US strikes Iran by...?" were invisible.
+- Daily loss limits blocked all trades in paper mode, slowing iteration.
+- Kelly position sizing produced near-zero bet sizes when confidence/divergence was tiny.
+- Config thresholds (min_confidence, min_divergence) were too high for focused single-event trading.
+
+### Solution
+- **CLI retry logic:** `_run_cli()` now retries up to 3 times with 1s sleep between attempts on non-zero exit codes. Timeouts still raise immediately.
+- **Tick error resilience:** Wrapped `orch.tick()` in try/except in the `run` loop so transient failures don't kill the continuous loop.
+- **Gamma API fallback:** `_apply_focus_filter()` falls back to `_fetch_focus_markets_from_api()` when CLI results have no matches. Converts search queries to slugs and queries `https://gamma-api.polymarket.com/events?slug=...` with suffix variants (`-by`, `-in`) for bracket events.
+- **Max brackets limiting:** New `FocusConfig.max_brackets` field (default 5). Sorts filtered bracket markets by `end_date` and keeps only the nearest N.
+- **Daily loss bypass in paper mode:** `_check_risk()` skips the daily loss gate when `config.mode == "paper"`.
+- **Config tuning:** Switched to fixed position sizing ($5), lowered min_divergence to 0.01, min_confidence to 0.01, enabled Tavily news with 600s cache.
+- **Tavily dependency:** Added `tavily-python>=0.7.22` to pyproject.toml.
+
+### Edits
+- `src/polymarket_agent/data/client.py` — added retry loop (3 attempts, 1s sleep) to `_run_cli()`
+- `src/polymarket_agent/cli.py` — wrapped `orch.tick()` in try/except for loop resilience
+- `src/polymarket_agent/orchestrator.py` — added `_fetch_focus_markets_from_api()` static method with Gamma API slug lookup; added max_brackets limiting in `_apply_focus_filter()`; bypassed daily loss check in paper mode
+- `src/polymarket_agent/config.py` — added `max_brackets: int = 5` to `FocusConfig`
+- `config.yaml` — Iran focus config, Tavily news, fixed sizing, lower thresholds, 10s polling
+- `pyproject.toml` — added `tavily-python>=0.7.22` dependency
+- `uv.lock` — updated lockfile
+- `tests/test_risk_gate.py` — updated `test_risk_gate_blocks_when_daily_loss_exceeded` → `test_risk_gate_skips_daily_loss_in_paper_mode` to match new paper mode behavior
+
+### NOT Changed
+- No changes to strategy logic (AI Analyst, TechnicalAnalyst, SignalTrader, etc.)
+- No changes to news provider implementations or indicator computations
+- No DB schema changes
+- No changes to MCP server or dashboard
+
+### Verification
+```bash
+uv run pytest tests/ -v                     # 393 passed
+uv run pytest tests/test_risk_gate.py -v    # 10 passed (updated daily loss test)
+ruff check src/                              # All checks passed
+```
+
+### Branch
+- Working branch: `main`
+
+---
+
 ## Session Entry — 2026-02-28 (Review Follow-Up: Focus Filter + Research Simplification)
 
 ### Problem
@@ -317,93 +399,13 @@ uv run ruff check src/               # All checks passed
 
 ---
 
-## Session Entry — 2026-02-27 (Review Follow-Up: Exit Manager Numeric Robustness)
-
-### Problem
-- Review of the newest Exit Manager additions found a robustness gap: `ExitManager.evaluate()` and `_check_exit()` assumed numeric `avg_price`/`shares` values.
-- If recovered or externally mutated position metadata contains malformed numeric strings (for example `"avg_price": "bad"`), exit evaluation raises `ValueError` and can break the tick cycle.
-
-### Solution
-- **TDD regression coverage first:** Added failing tests for malformed `avg_price` and malformed `shares` in exit-manager position payloads.
-- **Safe numeric parsing:** Added `_as_float(...)` helper and switched relevant parsing paths to skip malformed positions instead of raising:
-  - `evaluate()` shares parsing
-  - `_check_exit()` average price parsing
-  - `_check_signal_reversal()` arbitrage average price parsing
-- **Behavior preserved:** Valid positions and rule priority/threshold behavior remain unchanged.
-
-### Edits
-- `src/polymarket_agent/strategies/exit_manager.py` — added `_as_float(...)` and hardened numeric parsing in exit evaluation paths
-- `tests/test_exit_manager.py` — added `TestMalformedPositionData` with 2 regression tests
-- `HANDOFF.md` — added this review follow-up entry
-
-### NOT Changed
-- No changes to exit rule thresholds, ordering, or signal schema.
-- No orchestrator, DB, or paper execution logic changes in this follow-up.
-
-### Verification
-```bash
-uv run python -m pytest tests/test_exit_manager.py -q   # 13 passed
-./.venv/bin/ruff check src/polymarket_agent/strategies/exit_manager.py tests/test_exit_manager.py   # All checks passed
-./.venv/bin/mypy src/polymarket_agent/strategies/exit_manager.py   # Success: no issues found in 1 source file
-```
-
-### Branch
-- Working branch: `main`
-
----
-
-## Session Entry — 2026-02-27 (Exit Manager: Position Exit Logic)
-
-### Problem
-- The paper trading bot got permanently stuck once positions filled up. Strategies only generated buy/entry signals. The risk gate rejected all buy signals for held positions ("already holding position"). No mechanism existed to generate sell signals, so positions never closed. Conditional orders had 50% bands that rarely triggered.
-
-### Solution
-- **ExitManagerConfig (Task 1):** Added `ExitManagerConfig` Pydantic model to `config.py` with fields: `enabled`, `profit_target_pct` (0.15), `stop_loss_pct` (0.12), `signal_reversal` (true), `max_hold_hours` (24). Tightened conditional order bands from 50% to 12-15%.
-- **Position metadata (Task 2):** Added `opened_at` (ISO timestamp) and `entry_strategy` (strategy name) to PaperTrader position dicts. Backfills sensible defaults for positions recovered from DB snapshots.
-- **ExitManager class (Task 3):** New `strategies/exit_manager.py` with 4 exit rules evaluated in priority order (first match wins): profit target (+15%), stop loss (-12%), signal reversal (entry thesis invalidated), stale position (held >24h). Returns sell `Signal` objects.
-- **Orchestrator integration (Task 4):** ExitManager runs in `tick()` after entry strategies. Exit signals execute before entries, bypass risk gate/position sizing/aggregator. `_evaluate_exits()` helper fetches bid prices for held positions. ExitManager rebuilt on config hot-reload.
-- **Full verification (Tasks 5-6):** 333 tests pass, ruff clean, mypy clean. DB reset + end-to-end tick verified fresh buys execute and exit rules evaluate correctly.
-
-### Edits
-- `src/polymarket_agent/config.py` — added `ExitManagerConfig` model, wired into `AppConfig`
-- `config.yaml` — added `exit_manager` section; tightened `conditional_orders.default_stop_loss_pct` (0.5→0.12) and `default_take_profit_pct` (0.5→0.15)
-- `src/polymarket_agent/execution/paper.py` — added `opened_at`/`entry_strategy` to `_execute_buy`; backfill in `recover_from_db()`
-- `src/polymarket_agent/strategies/exit_manager.py` — **NEW** ExitManager with 4 exit rules
-- `src/polymarket_agent/orchestrator.py` — integrated ExitManager into `tick()` loop; added `_evaluate_exits()` helper; rebuild on `reload_config()`
-- `tests/test_config.py` — added `test_exit_manager_config_defaults`
-- `tests/test_paper_trader.py` — added 2 metadata tests (buy sets metadata, recover backfills)
-- `tests/test_exit_manager.py` — **NEW** 11 tests across 6 test classes (profit target, stop loss, signal reversal, staleness, disabled, priority)
-- `tests/test_orchestrator.py` — added `test_orchestrator_exit_manager_generates_sells`
-- `docs/plans/2026-02-27-exit-manager-design.md` — **NEW** design document
-- `docs/plans/2026-02-27-exit-manager-plan.md` — **NEW** implementation plan
-
-### NOT Changed
-- No changes to entry signal pipeline (risk gate, position sizing, aggregation all preserved)
-- No changes to strategy implementations (SignalTrader, Arbitrageur, etc.)
-- No changes to data layer, MCP server, or live trader
-- No changes to existing tests or their assertions
-
-### Verification
-```bash
-uv run pytest tests/ -v              # 333 passed
-ruff check src/                       # All checks passed
-uv run mypy src/                      # Success: no issues found in 35 source files
-uv run polymarket-agent tick          # 7 trades executed on fresh DB
-uv run polymarket-agent status        # Shows 7 positions with P&L
-```
-
-### Branch
-- Working branch: `main`
-
----
-
 ## Project Summary
 
 **Polymarket Agent** is a Python auto-trading pipeline for Polymarket prediction markets. It wraps the official `polymarket` CLI (v0.1.4, installed via Homebrew) into a structured system with pluggable trading strategies, paper/live execution, and MCP server integration for AI agents.
 
 ## Current State: Phase 4 COMPLETE
 
-- 391 tests passing, ruff lint clean, mypy strict clean
+- 393 tests passing, ruff lint clean, mypy strict clean
 - All 4 strategies implemented: SignalTrader, MarketMaker, Arbitrageur, AIAnalyst
 - Signal aggregation integrated (groups by market+token+side, unique strategy consensus)
 - MCP server with 14 tools: search_markets, get_market_detail, get_price_history, get_leaderboard, get_portfolio, get_signals, refresh_signals, place_trade, analyze_market, get_event, get_price, get_spread, get_volume, get_positions
@@ -575,7 +577,7 @@ See `docs/plans/2026-02-26-polymarket-agent-phase3.md` for detailed plan with 6 
 
 ```bash
 # Everything should pass
-uv run pytest tests/ -v           # 391 tests passing
+uv run pytest tests/ -v           # 393 tests passing
 uv run ruff check src/            # All checks passed
 uv run mypy src/                  # Success: no issues found in 35 source files
 uv run polymarket-agent tick      # Fetches live data, paper trades (focus-filtered)
