@@ -22,6 +22,7 @@ strategies:
     model: qwen/qwen3.5-35b-a3b
     max_calls_per_hour: 20
     min_divergence: 0.15
+    min_price: 0.05
     order_size: 25.0
     provider: openai
     # base_url: https://api.shubiaobiao.cn/v1
@@ -37,14 +38,14 @@ strategies:
     order_size: 25.0
 aggregation:
   min_confidence: 0.3
-  min_strategies: 2
+  min_strategies: 1
 risk:
   max_position_size: 200.0
   max_daily_loss: 500.0
   max_open_orders: 10
 conditional_orders:
   enabled: true
-  default_stop_loss_pct: 0.12
+  default_stop_loss_pct: 0.25
   default_take_profit_pct: 0.15
   trailing_stop_enabled: false
   trailing_stop_pct: 0.05
@@ -58,7 +59,7 @@ backtest:
 exit_manager:
   enabled: true
   profit_target_pct: 0.15
-  stop_loss_pct: 0.12
+  stop_loss_pct: 0.25
   signal_reversal: true
   max_hold_hours: 24
 news:
@@ -68,6 +69,10 @@ news:
   max_calls_per_hour: 50
   cache_ttl: 900
   max_results: 5
+focus:
+  enabled: false
+  search_queries:
+    - "Elon Musk"
 monitoring:
   structured_logging: false
   log_file: null

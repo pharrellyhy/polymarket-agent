@@ -189,6 +189,136 @@ def tick(
 
 
 @app.command()
+def research(
+    query: Annotated[str, typer.Argument(help="Search query to find markets (e.g. 'Elon Musk tweets')")],
+    config: ConfigOption = DEFAULT_CONFIG,
+    db: DbOption = DEFAULT_DB,
+) -> None:
+    """Search for markets and run deep analysis on a selected event."""
+    from polymarket_agent.data.client import PolymarketData  # noqa: PLC0415
+    from polymarket_agent.strategies.ai_analyst import AIAnalyst  # noqa: PLC0415
+    from polymarket_agent.strategies.indicators import analyze_market_technicals  # noqa: PLC0415
+
+    cfg = _load_config(config)
+    _setup_logging(cfg)
+    data = PolymarketData()
+
+    typer.echo(f"Searching for markets matching: {query!r}")
+    matches = data.search_markets(query, limit=50)
+
+    if not matches:
+        typer.echo("No markets found. Try a different query.")
+        raise typer.Exit()
+
+    def _market_label(question: str, group_item_title: str) -> str:
+        return group_item_title or question[-28:]
+
+    def _extract_reason_value(reason: str, key: str) -> str:
+        prefix = f"{key}="
+        for part in reason.split(","):
+            cleaned = part.strip()
+            if cleaned.startswith(prefix):
+                return cleaned[len(prefix) :]
+        return "?"
+
+    prefix_len = 30
+    groups: dict[str, list[int]] = {}
+    for index, market in enumerate(matches):
+        prefix = market.question[:prefix_len].lower() if len(market.question) >= prefix_len else market.question.lower()
+        groups.setdefault(prefix, []).append(index)
+    event_groups = list(groups.values())
+
+    if len(event_groups) > 1:
+        typer.echo(f"\nFound {len(event_groups)} event(s):\n")
+        for idx, indices in enumerate(event_groups, 1):
+            representative = matches[indices[0]]
+            bracket_note = f" ({len(indices)} brackets)" if len(indices) > 1 else ""
+            typer.echo(f"  [{idx}] {representative.question[:80]}{bracket_note}")
+
+        typer.echo()
+        choice = typer.prompt("Select event number", type=int, default=1)
+        if choice < 1 or choice > len(event_groups):
+            typer.echo("Invalid selection.")
+            raise typer.Exit(code=1)
+        selected_indices = event_groups[choice - 1]
+    else:
+        selected_indices = event_groups[0]
+
+    selected_markets = [matches[i] for i in selected_indices]
+    sorted_markets = sorted(selected_markets, key=lambda market: market.question)
+    is_bracket = len(selected_markets) > 1
+
+    # Display market overview
+    typer.echo(f"\n{'=' * 70}")
+    if is_bracket:
+        typer.echo(f"BRACKET EVENT: {selected_markets[0].question[:60]}...")
+        typer.echo(f"Brackets: {len(selected_markets)}")
+    else:
+        typer.echo(f"MARKET: {selected_markets[0].question}")
+    typer.echo(f"{'=' * 70}\n")
+
+    # Summary table
+    typer.echo(f"  {'BRACKET':<30} {'PRICE':>8} {'VOLUME':>12} {'LIQUIDITY':>12}")
+    typer.echo(f"  {'-' * 30} {'-' * 8} {'-' * 12} {'-' * 12}")
+    total_prob = 0.0
+    for market in sorted_markets:
+        label = _market_label(market.question, market.group_item_title)
+        price = market.outcome_prices[0] if market.outcome_prices else 0.0
+        total_prob += price
+        typer.echo(f"  {label:<30} {price:>7.2f} ${market.volume:>11,.0f} ${market.liquidity:>11,.0f}")
+    if is_bracket:
+        typer.echo(f"\n  Probability sum: {total_prob:.2f} (should be ~1.00)")
+
+    # Technical analysis per bracket
+    typer.echo("\n--- Technical Analysis ---\n")
+    typer.echo(f"  {'BRACKET':<30} {'TREND':>8} {'RSI':>6} {'EMA_X':>10} {'SQUEEZE':>8}")
+    typer.echo(f"  {'-' * 30} {'-' * 8} {'-' * 6} {'-' * 10} {'-' * 8}")
+    for market in sorted_markets:
+        label = _market_label(market.question, market.group_item_title)
+        if not market.clob_token_ids:
+            typer.echo(f"  {label:<30} {'N/A':>8}")
+            continue
+        token_id = market.clob_token_ids[0]
+        try:
+            history = data.get_price_history(token_id, interval="1w", fidelity=60)
+            ctx = analyze_market_technicals(history, token_id)
+            if ctx is None:
+                typer.echo(f"  {label:<30} {'no data':>8}")
+                continue
+            trend = {"up": "UP", "down": "DOWN", "neutral": "FLAT"}.get(ctx.trend_direction, "?")
+            typer.echo(
+                f"  {label:<30} {trend:>8} {ctx.rsi.rsi:>5.1f} "
+                f"{'bullish' if ctx.ema_crossover == 'bullish' else 'bearish' if ctx.ema_crossover == 'bearish' else 'neutral':>10} "
+                f"{'YES' if ctx.squeeze.is_squeezing else 'no':>8}"
+            )
+        except Exception:
+            typer.echo(f"  {label:<30} {'error':>8}")
+
+    # AI analysis (if configured)
+    ai_cfg = cfg.strategies.get("ai_analyst", {})
+    if ai_cfg.get("enabled", False):
+        typer.echo("\n--- AI Probability Estimates ---\n")
+        analyst = AIAnalyst()
+        analyst.configure(ai_cfg)
+        typer.echo(f"  {'BRACKET':<30} {'MARKET':>8} {'AI_EST':>8} {'DIVERGE':>8} {'ACTION':>8}")
+        typer.echo(f"  {'-' * 30} {'-' * 8} {'-' * 8} {'-' * 8} {'-' * 8}")
+        for market in sorted_markets:
+            label = _market_label(market.question, market.group_item_title)
+            signal = analyst._evaluate(market, data, all_markets=selected_markets)
+            price = market.outcome_prices[0] if market.outcome_prices else 0.0
+            if signal:
+                est_str = _extract_reason_value(signal.reason, "ai_estimate")
+                div_str = _extract_reason_value(signal.reason, "div")
+                typer.echo(f"  {label:<30} {price:>7.2f} {est_str:>8} {div_str:>8} {signal.side.upper():>8}")
+            else:
+                typer.echo(f"  {label:<30} {price:>7.2f} {'---':>8} {'---':>8} {'skip':>8}")
+    else:
+        typer.echo("\n  (AI analyst not enabled in config — skipping AI estimates)")
+
+    typer.echo()
+
+
+@app.command()
 def backtest(
     data_dir: Annotated[Path, typer.Argument(help="Directory containing CSV data files")],
     config: ConfigOption = DEFAULT_CONFIG,

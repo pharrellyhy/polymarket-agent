@@ -32,6 +32,7 @@ _DEFAULT_MODEL: str = "claude-sonnet-4-6"
 _DEFAULT_MAX_CALLS_PER_HOUR: int = 20
 _DEFAULT_MIN_DIVERGENCE: float = 0.15
 _DEFAULT_ORDER_SIZE: float = 25.0
+_DEFAULT_MIN_PRICE: float = 0.05
 _DEFAULT_NEWS_MAX_RESULTS: int = 5
 
 _MAX_QUESTION_LEN: int = 500
@@ -78,6 +79,7 @@ class AIAnalyst(Strategy):
         self._max_calls_per_hour: int = _DEFAULT_MAX_CALLS_PER_HOUR
         self._min_divergence: float = _DEFAULT_MIN_DIVERGENCE
         self._order_size: float = _DEFAULT_ORDER_SIZE
+        self._min_price: float = _DEFAULT_MIN_PRICE
         self._news_max_results: int = _DEFAULT_NEWS_MAX_RESULTS
         self._call_timestamps: list[float] = []
         self._client: Any = None
@@ -134,6 +136,7 @@ class AIAnalyst(Strategy):
         self._max_calls_per_hour = int(config.get("max_calls_per_hour", _DEFAULT_MAX_CALLS_PER_HOUR))
         self._min_divergence = float(config.get("min_divergence", _DEFAULT_MIN_DIVERGENCE))
         self._order_size = float(config.get("order_size", _DEFAULT_ORDER_SIZE))
+        self._min_price = float(config.get("min_price", _DEFAULT_MIN_PRICE))
         self._news_max_results = max(1, int(config.get("news_max_results", self._news_max_results)))
 
         raw_provider = config.get("provider", self._provider)
@@ -171,7 +174,7 @@ class AIAnalyst(Strategy):
                 continue
             if not self._can_call():
                 break
-            if (signal := self._evaluate(market, data)) is not None:
+            if (signal := self._evaluate(market, data, all_markets=markets)) is not None:
                 signals.append(signal)
         return signals
 
@@ -263,11 +266,50 @@ class AIAnalyst(Strategy):
     # Evaluation
     # ------------------------------------------------------------------
 
-    def _evaluate(self, market: Market, data: DataProvider) -> Signal | None:
+    @staticmethod
+    def _find_sibling_brackets(market: Market, all_markets: list[Market]) -> list[Market]:
+        """Find sibling bracket markets that share a common question prefix.
+
+        Bracket events (e.g., "How many tweets... 100-149", "... 150-199")
+        share long question prefixes. Returns siblings sorted by question text.
+        """
+        prefix_len = 30
+        if len(market.question) < prefix_len:
+            return []
+        prefix = market.question[:prefix_len].lower()
+        siblings = [
+            m
+            for m in all_markets
+            if m.id != market.id and len(m.question) >= prefix_len and m.question[:prefix_len].lower() == prefix
+        ]
+        if not siblings:
+            return []
+        return sorted(siblings, key=lambda m: m.question)
+
+    @staticmethod
+    def _format_bracket_distribution(market: Market, siblings: list[Market]) -> str:
+        """Format a bracket distribution table for the LLM prompt."""
+        all_brackets = sorted([market, *siblings], key=lambda m: m.question)
+        lines: list[str] = []
+        for m in all_brackets:
+            label = m.group_item_title or m.question[-30:]
+            price = m.outcome_prices[0] if m.outcome_prices else 0.0
+            marker = " <-- THIS MARKET" if m.id == market.id else ""
+            lines.append(f"  {label}: {price:.2f} ({price:.0%}){marker}")
+        total = sum(m.outcome_prices[0] for m in all_brackets if m.outcome_prices)
+        lines.append(f"  Sum of probabilities: {total:.2f}")
+        return "\n".join(lines)
+
+    def _evaluate(
+        self, market: Market, data: DataProvider, *, all_markets: list[Market] | None = None
+    ) -> Signal | None:
         if not market.outcome_prices or not market.clob_token_ids:
             return None
 
         yes_price = market.outcome_prices[0]
+        if yes_price < self._min_price or yes_price > (1.0 - self._min_price):
+            return None
+
         token_id = market.clob_token_ids[0]
 
         # Build enriched prompt
@@ -281,6 +323,17 @@ class AIAnalyst(Strategy):
         if market.description:
             description = _sanitize_text(market.description, _MAX_DESCRIPTION_LEN)
             prompt += f"Description: {description}\n"
+
+        # Bracket distribution context (optional)
+        if all_markets:
+            siblings = self._find_sibling_brackets(market, all_markets)
+            if siblings:
+                prompt += (
+                    f"\n--- BRACKET DISTRIBUTION ---\n"
+                    f"This market is one bracket in a multi-outcome event. "
+                    f"All brackets and their current market prices:\n"
+                    f"{self._format_bracket_distribution(market, siblings)}\n"
+                )
 
         # Technical analysis section (optional)
         ta_ctx = self._fetch_technical_context(token_id, data)

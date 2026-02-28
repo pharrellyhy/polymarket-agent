@@ -9,6 +9,7 @@ from typing import Any
 
 from polymarket_agent.config import AppConfig
 from polymarket_agent.data.client import PolymarketData
+from polymarket_agent.data.models import Market
 from polymarket_agent.data.provider import DataProvider
 from polymarket_agent.db import Database
 from polymarket_agent.execution.base import Executor, Order, Portfolio
@@ -97,6 +98,7 @@ class Orchestrator:
             conditional_trades = self._check_conditional_orders()
 
         markets = self._data.get_active_markets()
+        markets = self._apply_focus_filter(markets)
         logger.info("Fetched %d active markets", len(markets))
 
         raw_signals: list[Signal] = []
@@ -132,7 +134,7 @@ class Orchestrator:
                     trades_executed += 1
                     self._record_signal(signal, status="executed")
                     self._alerts.alert(
-                        f"Exit trade: {signal.side} {signal.size:.2f} USDC " f"on {signal.market_id} ({signal.reason})"
+                        f"Exit trade: {signal.side} {signal.size:.2f} USDC on {signal.market_id} ({signal.reason})"
                     )
                     self._db.cancel_conditional_orders_for_token(signal.token_id)
                 else:
@@ -209,6 +211,7 @@ class Orchestrator:
     def generate_signals(self) -> list[Signal]:
         """Run all strategies and return aggregated signals without executing."""
         markets = self._data.get_active_markets()
+        markets = self._apply_focus_filter(markets)
         raw_signals: list[Signal] = []
         for strategy in self._strategies:
             try:
@@ -270,6 +273,34 @@ class Orchestrator:
     def close(self) -> None:
         """Release resources (database connection)."""
         self._db.close()
+
+    # ------------------------------------------------------------------
+    # Focus filter
+    # ------------------------------------------------------------------
+
+    def _apply_focus_filter(self, markets: list[Market]) -> list[Market]:
+        """Filter markets to only those matching the focus config (OR logic).
+
+        Returns markets unchanged when focus is disabled.
+        """
+        focus = self._config.focus
+        if not focus.enabled:
+            return markets
+
+        ids = {market_id.strip() for market_id in focus.market_ids if market_id.strip()}
+        slugs = {slug.strip().lower() for slug in focus.market_slugs if slug.strip()}
+        queries = [query.strip().lower() for query in focus.search_queries if query.strip()]
+
+        if not ids and not slugs and not queries:
+            return markets
+
+        filtered: list[Market] = []
+        for market in markets:
+            question = market.question.lower()
+            if market.id in ids or market.slug.lower() in slugs or any(query in question for query in queries):
+                filtered.append(market)
+        logger.info("Focus filter: %d → %d markets", len(markets), len(filtered))
+        return filtered
 
     # ------------------------------------------------------------------
     # Conditional orders

@@ -80,6 +80,15 @@ class NewsConfig(BaseModel):
     max_results: int = 5
 
 
+class FocusConfig(BaseModel):
+    """Focus trading on specific markets/events."""
+
+    enabled: bool = False
+    search_queries: list[str] = Field(default_factory=list)
+    market_ids: list[str] = Field(default_factory=list)
+    market_slugs: list[str] = Field(default_factory=list)
+
+
 class AppConfig(BaseModel):
     """Top-level application configuration."""
 
@@ -95,6 +104,7 @@ class AppConfig(BaseModel):
     exit_manager: ExitManagerConfig = Field(default_factory=ExitManagerConfig)
     monitoring: MonitoringConfig = Field(default_factory=MonitoringConfig)
     news: NewsConfig = Field(default_factory=NewsConfig)
+    focus: FocusConfig = Field(default_factory=FocusConfig)
 
 
 def load_config(path: Path) -> AppConfig:

@@ -4,6 +4,88 @@ Last updated: 2026-02-28
 
 ---
 
+## Session Entry — 2026-02-28 (Review Follow-Up: Focus Filter + Research Simplification)
+
+### Problem
+- Review of the latest focus-trading/research code found two correctness and maintainability issues:
+  - `focus.search_queries` values containing only whitespace could filter out all markets when focus was enabled.
+  - Focus selectors (`search_queries`, `market_slugs`, `market_ids`) were not trimmed/normalized, so values with extra spaces failed to match.
+- The new `research` CLI command had avoidable complexity (redundant grouping flow, repeated sorting/label logic, brittle reason-field parsing).
+
+### Solution
+- **Focus filter normalization:** Updated `_apply_focus_filter()` to trim selectors, ignore empty values, and use a single OR check per market with less repeated string work.
+- **TDD regression coverage:** Added two orchestrator tests that failed first, then passed after the fix:
+  - blank query handling
+  - whitespace normalization for slug/query matching
+- **Research command simplification:** Reduced grouping logic to a direct prefix bucket map, removed repeated sort calls, centralized label extraction, and replaced split-chain parsing with a small key/value extractor helper.
+
+### Edits
+- `src/polymarket_agent/orchestrator.py` — simplified and hardened `_apply_focus_filter()` (trim/normalize/ignore-empty selectors)
+- `src/polymarket_agent/cli.py` — simplified `research` grouping/display flow and reason parsing helpers
+- `tests/test_orchestrator.py` — added:
+  - `test_focus_filter_ignores_blank_queries`
+  - `test_focus_filter_normalizes_slug_and_query_whitespace`
+
+### NOT Changed
+- No changes to trading strategy math or aggregation thresholds.
+- No changes to DB schema, execution layer, or market data client subprocess behavior.
+- No config defaults changed in this follow-up.
+
+### Verification
+```bash
+uv run python -m pytest tests/test_orchestrator.py::test_focus_filter_ignores_blank_queries tests/test_orchestrator.py::test_focus_filter_normalizes_slug_and_query_whitespace -q  # failed first, then passed after fix
+uv run python -m pytest tests/test_orchestrator.py tests/test_cli.py -q  # 12 passed
+ruff check src/polymarket_agent/orchestrator.py src/polymarket_agent/cli.py tests/test_orchestrator.py  # All checks passed
+uv run mypy src/polymarket_agent/orchestrator.py src/polymarket_agent/cli.py  # Success: no issues found in 2 source files
+```
+
+### Branch
+- Working branch: `main`
+
+---
+
+## Session Entry — 2026-02-28 (Focus Trading + Research Command)
+
+### Problem
+- The agent traded on ALL active markets (up to 50) with no way to focus on a specific event.
+- For bracket markets (e.g., "Elon Musk tweets" with brackets like "100-149", "150-199"), the AI analyst evaluated each bracket in isolation with no awareness of sibling brackets or the full probability distribution.
+- No CLI tool existed for deep analysis of a specific event before committing to trading it.
+
+### Solution
+- **FocusConfig:** New Pydantic model in `config.py` with `enabled`, `search_queries`, `market_ids`, `market_slugs` fields. Added to `AppConfig`. Filters combine with OR logic.
+- **Focus filter in orchestrator:** `_apply_focus_filter()` method applied in both `tick()` and `generate_signals()`. Returns markets unchanged when disabled.
+- **Bracket context for AI analyst:** `_evaluate()` now accepts `all_markets`, detects sibling brackets by shared 30-char question prefix, and appends a `BRACKET DISTRIBUTION` section to the LLM prompt showing all brackets with prices.
+- **`research` CLI command:** Interactive event picker that groups search results by shared prefix (detecting bracket events), displays price/volume/liquidity table, technical indicators (trend, RSI, EMA crossover, squeeze), and AI probability estimates with divergence.
+- **Config update:** `focus.enabled: true` with `search_queries: ["Elon Musk"]` targeting the tweets event.
+
+### Edits
+- `src/polymarket_agent/config.py` — added `FocusConfig` model, wired into `AppConfig` as `focus` field
+- `src/polymarket_agent/orchestrator.py` — added `Market` import, `_apply_focus_filter()` method, applied in `tick()` and `generate_signals()`
+- `src/polymarket_agent/strategies/ai_analyst.py` — added `_find_sibling_brackets()`, `_format_bracket_distribution()` static methods; `_evaluate()` accepts `all_markets` kwarg; `analyze()` passes markets through
+- `src/polymarket_agent/cli.py` — added `research` command with bracket grouping, event picker, TA display, AI estimates
+- `config.yaml` — added `focus:` section (enabled, search_queries)
+- `docs/plans/2026-02-28-focus-trading.md` — **NEW** design document
+
+### NOT Changed
+- No changes to existing strategy logic (SignalTrader, MarketMaker, Arbitrageur, TechnicalAnalyst)
+- No changes to execution layer, MCP server, or dashboard
+- No DB schema changes
+- All 391 existing tests pass unchanged (backward-compatible: `all_markets` defaults to `None`)
+
+### Verification
+```bash
+uv run pytest tests/ -v                                          # 391 passed
+ruff check src/polymarket_agent/config.py src/polymarket_agent/orchestrator.py src/polymarket_agent/strategies/ai_analyst.py src/polymarket_agent/cli.py  # All checks passed
+uv run mypy src/polymarket_agent/config.py src/polymarket_agent/orchestrator.py src/polymarket_agent/strategies/ai_analyst.py src/polymarket_agent/cli.py  # Success: no issues found
+uv run polymarket-agent research "Elon Musk tweets"              # Shows bracket analysis
+uv run polymarket-agent tick                                      # Only processes focused markets
+```
+
+### Branch
+- Working branch: `main`
+
+---
+
 ## Session Entry — 2026-02-28 (Review Follow-Up: News `max_results` Wiring)
 
 ### Problem
@@ -315,107 +397,20 @@ uv run polymarket-agent status        # Shows 7 positions with P&L
 
 ---
 
-## Session Entry — 2026-02-27 (Review Follow-Up: Provider Validation Hardening)
-
-### Problem
-- Review of the new OpenAI-compatible support found a config-safety gap: unknown provider strings were silently routed down OpenAI paths instead of being rejected/falling back predictably.
-- Impact:
-  - `autotune` could fail with misleading API-key/import errors for typoed providers.
-  - `AIAnalyst` could hold an invalid provider value and behave unexpectedly.
-  - CLI `autotune` would do full evaluation work before surfacing provider mistakes.
-
-### Solution
-- **autotune provider validation:** Added explicit provider normalization/validation in `_init_client()` and raise `ValueError` for unsupported providers.
-- **AIAnalyst provider normalization:** `configure()` now lowercases/validates provider and falls back to default (`anthropic`) with a warning on unknown values.
-- **Defensive init guard:** `_init_client()` in `AIAnalyst` now has an explicit unknown-provider fallback branch.
-- **CLI fast-fail validation:** `polymarket-agent autotune` now validates `--provider` early and raises `BadParameter` before orchestrator/evaluation work.
-- **Regression tests:** Added targeted tests for unknown-provider rejection/fallback and CLI validation path.
-
-### Edits
-- `src/polymarket_agent/autotune.py` — added `_SUPPORTED_PROVIDERS` and strict provider validation in `_init_client()`
-- `src/polymarket_agent/strategies/ai_analyst.py` — added provider normalization/validation + fallback safeguards
-- `src/polymarket_agent/cli.py` — added early `--provider` validation in `autotune` command
-- `tests/test_autotune.py` — added unknown-provider `_init_client` test and CLI invalid-provider test
-- `tests/test_ai_analyst.py` — added invalid-provider fallback test
-- `HANDOFF.md` — added this review follow-up entry; removed oldest session entry to keep last 10 entries
-
-### NOT Changed
-- No changes to provider API request payload shapes.
-- No changes to autotune parameter validation/apply semantics.
-- No changes to MCP tool behavior in this follow-up.
-
-### Verification
-```bash
-uv run python -m pytest tests/test_ai_analyst.py tests/test_autotune.py -q   # 38 passed
-./.venv/bin/ruff check src/polymarket_agent/autotune.py src/polymarket_agent/strategies/ai_analyst.py src/polymarket_agent/cli.py tests/test_ai_analyst.py tests/test_autotune.py   # All checks passed
-./.venv/bin/mypy src/polymarket_agent/autotune.py src/polymarket_agent/strategies/ai_analyst.py src/polymarket_agent/cli.py   # Success: no issues found in 3 source files
-```
-
-### Branch
-- Working branch: `main`
-
----
-
-## Session Entry — 2026-02-27 (OpenAI-Compatible API Support)
-
-### Problem
-- AIAnalyst strategy was hardcoded to Anthropic SDK — no way to use OpenAI-compatible providers (OpenAI, local Ollama/vLLM endpoints).
-- `autotune.sh` used `claude -p` which fails with 403 in non-interactive/launchd contexts. No way to use alternative LLM providers for auto-tuning.
-
-### Solution
-- **AIAnalyst provider abstraction (Step 1):** Added `_DEFAULT_PROVIDER`, `_provider`, `_base_url`, `_api_key_env` instance vars. Split `_init_client()` into `_init_anthropic_client()` / `_init_openai_client()`. Extracted `_call_llm()` to abstract API response shapes. `configure()` now reads `provider`, `base_url`, `api_key_env` and re-initializes the client when changed.
-- **autotune.py module (Step 2):** New `src/polymarket_agent/autotune.py` with `run_autotune()` function. Builds system prompt with tuning rules, sends eval JSON to LLM, parses structured JSON response, validates changes against tunable parameter min/max ranges, applies changes to config.yaml via PyYAML. Supports both anthropic and openai providers.
-- **CLI autotune subcommand (Step 3):** New `polymarket-agent autotune` command with `--provider`, `--model`, `--base-url`, `--api-key-env`, `--period` options. Runs evaluate logic internally then calls `run_autotune()`.
-- **autotune.sh provider dispatch (Step 4):** `AUTOTUNE_PROVIDER` env var selects "claude" (original `claude -p` flow), "openai", or "anthropic" (new direct API flow via CLI subcommand). Also added `AUTOTUNE_MODEL`, `AUTOTUNE_BASE_URL`, `AUTOTUNE_API_KEY_ENV` env vars.
-- **Config + deps (Step 5):** Added commented-out `provider`, `base_url`, `api_key_env` fields to `config.yaml` ai_analyst section. Added `openai = ["openai>=1.0"]` optional dependency group to pyproject.toml.
-- **MCP docstring update (Step 6):** Made `analyze_market` docstring and error message provider-agnostic.
-- **Tests (Step 7):** 7 new OpenAI provider tests in test_ai_analyst.py. 19 new tests in test_autotune.py (parsing, validation, config modification, integration). Updated test_mcp_server.py assertion for generic error message. All 315 tests pass.
-
-### Edits
-- `src/polymarket_agent/strategies/ai_analyst.py` — provider abstraction: `_init_anthropic_client()`, `_init_openai_client()`, `_call_llm()`, updated `configure()`
-- `src/polymarket_agent/autotune.py` — **NEW** LLM-based config auto-tuner module
-- `src/polymarket_agent/cli.py` — added `autotune` subcommand
-- `scripts/autotune.sh` — provider dispatch (claude/openai/anthropic)
-- `scripts/com.polymarket-agent.autotune.plist` — added env var placeholders for provider/model/keys
-- `config.yaml` — commented-out provider fields under ai_analyst
-- `pyproject.toml` — added `openai` optional dependency group
-- `src/polymarket_agent/mcp_server.py` — provider-agnostic docstring and error message
-- `tests/test_ai_analyst.py` — 7 new OpenAI provider tests
-- `tests/test_autotune.py` — **NEW** 19 tests for autotune module
-- `tests/test_mcp_server.py` — updated error message assertion
-
-### NOT Changed
-- `config.py` — `strategies: dict[str, dict[str, Any]]` already passes through arbitrary keys
-- `orchestrator.py` — `_load_strategies()` already handles `cls()` + `configure()`
-- `strategies/base.py` — Strategy ABC is flexible enough
-- No changes to existing Anthropic behavior — default provider remains "anthropic"
-
-### Verification
-```bash
-uv run pytest tests/ -v                  # 315 passed
-uv run ruff check src/ tests/test_ai_analyst.py tests/test_autotune.py tests/test_mcp_server.py  # All checks passed
-uv run mypy src/                         # Success: no issues found in 34 source files
-uv run polymarket-agent autotune --help  # Shows autotune command
-```
-
-### Branch
-- Working branch: `main`
-
----
-
 ## Project Summary
 
 **Polymarket Agent** is a Python auto-trading pipeline for Polymarket prediction markets. It wraps the official `polymarket` CLI (v0.1.4, installed via Homebrew) into a structured system with pluggable trading strategies, paper/live execution, and MCP server integration for AI agents.
 
 ## Current State: Phase 4 COMPLETE
 
-- 337 tests passing, ruff lint clean, mypy strict clean (35 source files)
+- 391 tests passing, ruff lint clean, mypy strict clean
 - All 4 strategies implemented: SignalTrader, MarketMaker, Arbitrageur, AIAnalyst
 - Signal aggregation integrated (groups by market+token+side, unique strategy consensus)
 - MCP server with 14 tools: search_markets, get_market_detail, get_price_history, get_leaderboard, get_portfolio, get_signals, refresh_signals, place_trade, analyze_market, get_event, get_price, get_spread, get_volume, get_positions
 - LiveTrader with py-clob-client for real order execution
 - Risk management: max_position_size, max_daily_loss, max_open_orders enforced in Orchestrator
-- CLI commands: `run` (with `--live` safety flag + config hot-reload), `status`, `tick`, `report`, `evaluate`, `backtest`, `dashboard`, `mcp`
+- CLI commands: `run` (with `--live` safety flag + config hot-reload), `status`, `tick`, `research`, `report`, `evaluate`, `backtest`, `dashboard`, `mcp`
+- Focus trading: configurable market filtering by search queries, IDs, or slugs; bracket market context for AI analyst
 - Auto-tune pipeline: `scripts/autotune.sh` + launchd plist for periodic Claude Code-driven config tuning
 - Exit manager: automatic position exits via profit target, stop loss, signal reversal, and staleness rules
 
@@ -440,7 +435,7 @@ MCP Server (FastMCP, stdio) → AppContext → Orchestrator + Data + Config
 
 | File | Purpose |
 |------|---------|
-| `src/polymarket_agent/cli.py` | Typer CLI: `run` (hot-reload), `status`, `tick`, `report`, `evaluate`, `backtest`, `dashboard`, `mcp` |
+| `src/polymarket_agent/cli.py` | Typer CLI: `run` (hot-reload), `status`, `tick`, `research`, `report`, `evaluate`, `backtest`, `dashboard`, `mcp` |
 | `src/polymarket_agent/orchestrator.py` | Main loop: fetch → analyze → aggregate → execute |
 | `src/polymarket_agent/config.py` | Pydantic config from YAML (incl. AggregationConfig) |
 | `src/polymarket_agent/data/models.py` | Market, Event, OrderBook, PricePoint, Trader, Spread, Volume, Position (Pydantic) |
@@ -574,15 +569,17 @@ See `docs/plans/2026-02-26-polymarket-agent-phase3.md` for detailed plan with 6 
 - `docs/plans/2026-02-26-polymarket-agent-phase3.md` — Phase 3 implementation plan (COMPLETE)
 - `docs/plans/2026-02-27-exit-manager-design.md` — Exit manager design document
 - `docs/plans/2026-02-27-exit-manager-plan.md` — Exit manager implementation plan
+- `docs/plans/2026-02-28-focus-trading.md` — Focus trading + research command design
 
 ## Verification Commands
 
 ```bash
 # Everything should pass
-uv run pytest tests/ -v           # 333 tests passing
+uv run pytest tests/ -v           # 391 tests passing
 uv run ruff check src/            # All checks passed
 uv run mypy src/                  # Success: no issues found in 35 source files
-uv run polymarket-agent tick      # Fetches live data, paper trades
+uv run polymarket-agent tick      # Fetches live data, paper trades (focus-filtered)
+uv run polymarket-agent research "Elon Musk"  # Deep bracket market analysis
 uv run polymarket-agent mcp       # Starts MCP server (stdio transport)
 uv run polymarket-agent run --live  # Live trading (requires POLYMARKET_PRIVATE_KEY)
 ```
