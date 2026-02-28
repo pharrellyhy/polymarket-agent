@@ -69,6 +69,17 @@ class ExitManagerConfig(BaseModel):
     max_hold_hours: int = 24
 
 
+class NewsConfig(BaseModel):
+    """News provider configuration."""
+
+    enabled: bool = False
+    provider: Literal["google_rss", "tavily"] = "google_rss"
+    api_key_env: str = "TAVILY_API_KEY"
+    max_calls_per_hour: int = 50
+    cache_ttl: int = 900
+    max_results: int = 5
+
+
 class AppConfig(BaseModel):
     """Top-level application configuration."""
 
@@ -83,6 +94,7 @@ class AppConfig(BaseModel):
     backtest: BacktestConfig = Field(default_factory=BacktestConfig)
     exit_manager: ExitManagerConfig = Field(default_factory=ExitManagerConfig)
     monitoring: MonitoringConfig = Field(default_factory=MonitoringConfig)
+    news: NewsConfig = Field(default_factory=NewsConfig)
 
 
 def load_config(path: Path) -> AppConfig:

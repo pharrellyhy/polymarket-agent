@@ -30,6 +30,18 @@ RULES:
 4. If performance is acceptable (positive return, Sharpe > 0.5, win rate > 45%), make no changes.
 5. Only adjust parameters listed in tunable_parameters.
 
+PARAMETER GUIDANCE:
+- Strategy parameters (order_size, thresholds) control trade aggressiveness per strategy.
+- Technical analyst parameters (ema_fast_period, ema_slow_period, rsi_period) control indicator
+  sensitivity. Shorter periods = more responsive but noisier. EMA fast must be < EMA slow.
+  history_fidelity controls data resolution (higher = more data points = smoother indicators).
+- AI analyst parameters (min_divergence, max_calls_per_hour) control LLM trade selectivity and cost.
+  Higher min_divergence = fewer but higher-conviction trades.
+- News parameters (max_calls_per_hour, cache_ttl, max_results) control how often and how much
+  real-world context the AI analyst receives. Higher cache_ttl reduces API load.
+- aggregation.min_strategies controls multi-strategy consensus — higher values require more
+  strategies to agree before executing a trade.
+
 Respond with ONLY valid JSON in this exact format (no markdown fences):
 {"changes": [{"path": "dotted.config.path", "value": <number>, "reason": "brief explanation"}]}
 

@@ -141,7 +141,9 @@ class PaperTrader(Executor):
                     reason=f"writeoff: price=0, lost {shares_lost:.2f} shares (cost_basis={cost_basis:.2f})",
                 )
             )
-            logger.warning("Wrote off position %s (%.2f shares, cost_basis=%.2f)", signal.token_id, shares_lost, cost_basis)
+            logger.warning(
+                "Wrote off position %s (%.2f shares, cost_basis=%.2f)", signal.token_id, shares_lost, cost_basis
+            )
             return Order(
                 market_id=signal.market_id,
                 token_id=signal.token_id,

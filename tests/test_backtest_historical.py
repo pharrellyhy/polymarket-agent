@@ -141,8 +141,22 @@ class TestHistoricalDataProvider:
 
     def test_malformed_rows_skipped(self, tmp_path: Path) -> None:
         rows = [
-            {"timestamp": "2024-01-01", "market_id": "100", "question": "Q?", "yes_price": "bad", "volume": "100", "token_id": "0x1"},
-            {"timestamp": "2024-01-01", "market_id": "101", "question": "Q2?", "yes_price": "0.5", "volume": "200", "token_id": "0x2"},
+            {
+                "timestamp": "2024-01-01",
+                "market_id": "100",
+                "question": "Q?",
+                "yes_price": "bad",
+                "volume": "100",
+                "token_id": "0x1",
+            },
+            {
+                "timestamp": "2024-01-01",
+                "market_id": "101",
+                "question": "Q2?",
+                "yes_price": "0.5",
+                "volume": "200",
+                "token_id": "0x2",
+            },
         ]
         _write_csv(tmp_path / "data.csv", rows)
         provider = HistoricalDataProvider(tmp_path)

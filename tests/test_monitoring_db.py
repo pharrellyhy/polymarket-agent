@@ -29,14 +29,18 @@ class TestSignalLog:
 
     def test_filter_by_strategy(self, db: Database) -> None:
         db.record_signal(strategy="arb", market_id="m1", token_id="t1", side="buy", confidence=0.9, size=10.0)
-        db.record_signal(strategy="signal_trader", market_id="m2", token_id="t2", side="sell", confidence=0.7, size=20.0)
+        db.record_signal(
+            strategy="signal_trader", market_id="m2", token_id="t2", side="sell", confidence=0.7, size=20.0
+        )
         log = db.get_signal_log(strategy="arb")
         assert len(log) == 1
         assert log[0]["strategy"] == "arb"
 
     def test_limit(self, db: Database) -> None:
         for i in range(5):
-            db.record_signal(strategy="test", market_id=f"m{i}", token_id=f"t{i}", side="buy", confidence=0.5, size=10.0)
+            db.record_signal(
+                strategy="test", market_id=f"m{i}", token_id=f"t{i}", side="buy", confidence=0.5, size=10.0
+            )
         log = db.get_signal_log(limit=3)
         assert len(log) == 3
 

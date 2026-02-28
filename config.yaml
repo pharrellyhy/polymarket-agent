@@ -19,16 +19,25 @@ strategies:
     order_size: 25
   ai_analyst:
     enabled: true
-    model: gpt-5.1
+    model: qwen/qwen3.5-35b-a3b
     max_calls_per_hour: 20
     min_divergence: 0.15
     order_size: 25.0
     provider: openai
-    base_url: https://api.shubiaobiao.cn/v1
-    api_key_env: OPENAI_API_KEY
+    # base_url: https://api.shubiaobiao.cn/v1
+    # api_key_env: OPENAI_API_KEY
+    base_url: http://localhost:11567/v1
+  technical_analyst:
+    enabled: true
+    ema_fast_period: 8
+    ema_slow_period: 21
+    rsi_period: 14
+    history_interval: "1w"
+    history_fidelity: 60
+    order_size: 25.0
 aggregation:
   min_confidence: 0.3
-  min_strategies: 1
+  min_strategies: 2
 risk:
   max_position_size: 200.0
   max_daily_loss: 500.0
@@ -52,6 +61,13 @@ exit_manager:
   stop_loss_pct: 0.12
   signal_reversal: true
   max_hold_hours: 24
+news:
+  enabled: true
+  provider: google_rss
+  api_key_env: TAVILY_API_KEY
+  max_calls_per_hour: 50
+  cache_ttl: 900
+  max_results: 5
 monitoring:
   structured_logging: false
   log_file: null

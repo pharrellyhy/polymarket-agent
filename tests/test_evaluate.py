@@ -83,6 +83,65 @@ def test_build_tunable_params_no_conditional_orders_when_disabled() -> None:
     assert "conditional_orders.default_stop_loss_pct" not in paths
 
 
+def test_build_tunable_params_includes_technical_analyst_params() -> None:
+    cfg = AppConfig(
+        strategies={
+            "technical_analyst": {
+                "enabled": True,
+                "ema_fast_period": 8,
+                "ema_slow_period": 21,
+                "rsi_period": 14,
+                "history_fidelity": 60,
+                "order_size": 25.0,
+            }
+        },
+    )
+    params = _build_tunable_params(cfg)
+    paths = [p["path"] for p in params]
+    assert "strategies.technical_analyst.ema_fast_period" in paths
+    assert "strategies.technical_analyst.ema_slow_period" in paths
+    assert "strategies.technical_analyst.rsi_period" in paths
+    assert "strategies.technical_analyst.history_fidelity" in paths
+    assert "strategies.technical_analyst.order_size" in paths
+
+
+def test_build_tunable_params_includes_ai_analyst_params() -> None:
+    cfg = AppConfig(
+        strategies={
+            "ai_analyst": {
+                "enabled": True,
+                "min_divergence": 0.15,
+                "max_calls_per_hour": 20,
+                "order_size": 25.0,
+            }
+        },
+    )
+    params = _build_tunable_params(cfg)
+    paths = [p["path"] for p in params]
+    assert "strategies.ai_analyst.min_divergence" in paths
+    assert "strategies.ai_analyst.max_calls_per_hour" in paths
+    assert "strategies.ai_analyst.order_size" in paths
+
+
+def test_build_tunable_params_includes_news_params_when_enabled() -> None:
+    cfg = AppConfig()
+    cfg.news.enabled = True
+    params = _build_tunable_params(cfg)
+    paths = [p["path"] for p in params]
+    assert "news.max_calls_per_hour" in paths
+    assert "news.cache_ttl" in paths
+    assert "news.max_results" in paths
+
+
+def test_build_tunable_params_no_news_params_when_disabled() -> None:
+    cfg = AppConfig()
+    cfg.news.enabled = False
+    params = _build_tunable_params(cfg)
+    paths = [p["path"] for p in params]
+    assert "news.max_calls_per_hour" not in paths
+    assert "news.cache_ttl" not in paths
+
+
 def test_analyze_trades_empty() -> None:
     result = _analyze_trades([])
     assert result["total"] == 0
@@ -198,8 +257,6 @@ def test_evaluate_command_text_output(mocker: object, tmp_path: Path) -> None:
 
     db_file = tmp_path / "test.db"
 
-    result = runner.invoke(
-        app, ["evaluate", "--config", str(config_file), "--db", str(db_file), "--no-json"]
-    )
+    result = runner.invoke(app, ["evaluate", "--config", str(config_file), "--db", str(db_file), "--no-json"])
     assert result.exit_code == 0
     assert "Evaluation" in result.output

@@ -78,6 +78,7 @@ def test_orchestrator_exit_manager_generates_sells(mocker: object) -> None:
 
         # Manually seed a position in the executor
         from datetime import datetime, timezone
+
         orch._executor._positions["0xtok1"] = {
             "market_id": "100",
             "shares": 100.0,
@@ -90,6 +91,7 @@ def test_orchestrator_exit_manager_generates_sells(mocker: object) -> None:
 
         # Mock get_price to return a price above profit target (0.40 * 1.15 = 0.46)
         from polymarket_agent.data.models import Spread
+
         mock_spread = Spread(token_id="0xtok1", bid=0.50, ask=0.52, spread=0.02)
         mocker.patch.object(orch._data, "get_price", return_value=mock_spread)
 

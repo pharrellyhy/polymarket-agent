@@ -3,6 +3,9 @@
 Supports both Anthropic and OpenAI-compatible providers. Set ``provider``
 to ``"openai"`` in the strategy config (or via ``configure()``) to use any
 OpenAI-compatible endpoint, including local models served via Ollama/vLLM.
+
+The prompt is enriched with optional technical analysis (from price history)
+and recent news headlines when available.
 """
 
 from __future__ import annotations
@@ -15,9 +18,12 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from polymarket_agent.data.models import Market
 from polymarket_agent.strategies.base import Signal, Strategy
+from polymarket_agent.strategies.indicators import TechnicalContext, analyze_market_technicals
 
 if TYPE_CHECKING:
     from polymarket_agent.data.provider import DataProvider
+    from polymarket_agent.news.models import NewsItem
+    from polymarket_agent.news.provider import NewsProvider
 
 logger = logging.getLogger(__name__)
 
@@ -26,9 +32,12 @@ _DEFAULT_MODEL: str = "claude-sonnet-4-6"
 _DEFAULT_MAX_CALLS_PER_HOUR: int = 20
 _DEFAULT_MIN_DIVERGENCE: float = 0.15
 _DEFAULT_ORDER_SIZE: float = 25.0
+_DEFAULT_NEWS_MAX_RESULTS: int = 5
 
 _MAX_QUESTION_LEN: int = 500
 _MAX_DESCRIPTION_LEN: int = 1000
+_MAX_NEWS_TITLE_LEN: int = 200
+_MAX_NEWS_PUBLISHED_LEN: int = 40
 
 _DEFAULT_API_KEY_ENVS: dict[str, str] = {
     "anthropic": "ANTHROPIC_API_KEY",
@@ -69,8 +78,10 @@ class AIAnalyst(Strategy):
         self._max_calls_per_hour: int = _DEFAULT_MAX_CALLS_PER_HOUR
         self._min_divergence: float = _DEFAULT_MIN_DIVERGENCE
         self._order_size: float = _DEFAULT_ORDER_SIZE
+        self._news_max_results: int = _DEFAULT_NEWS_MAX_RESULTS
         self._call_timestamps: list[float] = []
         self._client: Any = None
+        self._news_provider: NewsProvider | None = None
         self._init_client()
 
     def _resolved_api_key_env(self) -> str:
@@ -123,6 +134,7 @@ class AIAnalyst(Strategy):
         self._max_calls_per_hour = int(config.get("max_calls_per_hour", _DEFAULT_MAX_CALLS_PER_HOUR))
         self._min_divergence = float(config.get("min_divergence", _DEFAULT_MIN_DIVERGENCE))
         self._order_size = float(config.get("order_size", _DEFAULT_ORDER_SIZE))
+        self._news_max_results = max(1, int(config.get("news_max_results", self._news_max_results)))
 
         raw_provider = config.get("provider", self._provider)
         new_provider = str(raw_provider).strip().lower() if raw_provider is not None else self._provider
@@ -143,6 +155,12 @@ class AIAnalyst(Strategy):
             self._client = None
             self._init_client()
 
+    def set_news_provider(self, provider: NewsProvider, *, max_results: int | None = None) -> None:
+        """Attach a news provider for prompt enrichment."""
+        self._news_provider = provider
+        if max_results is not None:
+            self._news_max_results = max(1, int(max_results))
+
     def analyze(self, markets: list[Market], data: DataProvider) -> list[Signal]:
         if self._client is None:
             return []
@@ -153,7 +171,7 @@ class AIAnalyst(Strategy):
                 continue
             if not self._can_call():
                 break
-            if (signal := self._evaluate(market)) is not None:
+            if (signal := self._evaluate(market, data)) is not None:
                 signals.append(signal)
         return signals
 
@@ -168,7 +186,7 @@ class AIAnalyst(Strategy):
         if self._provider == "anthropic":
             response = self._client.messages.create(
                 model=self._model,
-                max_tokens=16,
+                max_tokens=32,
                 temperature=0,
                 messages=[{"role": "user", "content": prompt}],
             )
@@ -177,22 +195,82 @@ class AIAnalyst(Strategy):
         # OpenAI-compatible provider
         response = self._client.chat.completions.create(
             model=self._model,
-            max_tokens=16,
+            max_tokens=32,
             temperature=0,
             messages=[
-                {"role": "system", "content": "Respond with ONLY a single decimal number between 0.0 and 1.0. No other text."},
+                {
+                    "role": "system",
+                    "content": "Respond with ONLY a single decimal number between 0.0 and 1.0. No other text.",
+                },
                 {"role": "user", "content": prompt},
             ],
         )
         content = response.choices[0].message.content
         return content.strip() if content else ""
 
-    def _evaluate(self, market: Market) -> Signal | None:
+    # ------------------------------------------------------------------
+    # Technical analysis context
+    # ------------------------------------------------------------------
+
+    def _fetch_technical_context(self, token_id: str, data: DataProvider) -> TechnicalContext | None:
+        """Best-effort fetch of technical indicators for a token."""
+        try:
+            history = data.get_price_history(token_id, interval="1w", fidelity=60)
+            return analyze_market_technicals(history, token_id)
+        except Exception:
+            logger.debug("Failed to fetch TA context for %s", token_id)
+            return None
+
+    @staticmethod
+    def _format_technical_summary(ctx: TechnicalContext) -> str:
+        """Format technical context into a human-readable prompt section."""
+        direction_arrow = {"up": "up", "down": "down", "neutral": "flat"}
+        trend_label = direction_arrow.get(ctx.trend_direction, "flat")
+        lines = [
+            f"Price trend: {trend_label} ({ctx.price_start:.4f} -> {ctx.current_price:.4f}, {ctx.price_change_pct:+.1%})",
+            f"EMA crossover: {ctx.ema_crossover} (fast={ctx.ema_fast.value:.4f}, slow={ctx.ema_slow.value:.4f})",
+            f"RSI: {ctx.rsi.rsi:.1f} ({'overbought' if ctx.rsi.is_overbought else 'oversold' if ctx.rsi.is_oversold else 'neutral'})",
+            f"Volatility: {'compressed (squeeze)' if ctx.squeeze.is_squeezing else 'expanding' if ctx.squeeze.squeeze_releasing else 'normal'}",
+        ]
+        return "\n".join(lines)
+
+    # ------------------------------------------------------------------
+    # News context
+    # ------------------------------------------------------------------
+
+    def _fetch_news(self, query: str) -> list[NewsItem]:
+        """Best-effort fetch of recent news headlines."""
+        if self._news_provider is None:
+            return []
+        try:
+            return self._news_provider.search(query[:100], max_results=self._news_max_results)
+        except Exception:
+            logger.debug("Failed to fetch news for query: %s", query[:50])
+            return []
+
+    @staticmethod
+    def _format_news_summary(items: list[NewsItem]) -> str:
+        """Format news items into a prompt section."""
+        lines: list[str] = []
+        for item in items[:5]:
+            title = _sanitize_text(item.title, _MAX_NEWS_TITLE_LEN)
+            published = _sanitize_text(item.published, _MAX_NEWS_PUBLISHED_LEN)
+            date_part = f" ({published})" if published else ""
+            lines.append(f"- {title}{date_part}")
+        return "\n".join(lines)
+
+    # ------------------------------------------------------------------
+    # Evaluation
+    # ------------------------------------------------------------------
+
+    def _evaluate(self, market: Market, data: DataProvider) -> Signal | None:
         if not market.outcome_prices or not market.clob_token_ids:
             return None
 
         yes_price = market.outcome_prices[0]
+        token_id = market.clob_token_ids[0]
 
+        # Build enriched prompt
         question = _sanitize_text(market.question, _MAX_QUESTION_LEN)
         prompt = (
             "You are a prediction market analyst. Estimate the probability (0.0 to 1.0) "
@@ -203,6 +281,17 @@ class AIAnalyst(Strategy):
         if market.description:
             description = _sanitize_text(market.description, _MAX_DESCRIPTION_LEN)
             prompt += f"Description: {description}\n"
+
+        # Technical analysis section (optional)
+        ta_ctx = self._fetch_technical_context(token_id, data)
+        if ta_ctx is not None:
+            prompt += f"\n--- TECHNICAL ANALYSIS ---\n{self._format_technical_summary(ta_ctx)}\n"
+
+        # News section (optional)
+        news_items = self._fetch_news(market.question)
+        if news_items:
+            prompt += f"\n--- RECENT NEWS ---\n{self._format_news_summary(news_items)}\n"
+
         prompt += (
             "--- END MARKET DATA ---\n"
             f"\nCurrent market price: {yes_price:.2f}\n"
@@ -230,7 +319,6 @@ class AIAnalyst(Strategy):
         # Positive divergence → AI thinks Yes is underpriced → buy Yes token
         # Negative divergence → AI thinks Yes is overpriced → sell Yes token
         side: Literal["buy", "sell"] = "buy" if divergence > 0 else "sell"
-        token_id = market.clob_token_ids[0]
 
         confidence = min(abs(divergence) / 0.3, 1.0)
 

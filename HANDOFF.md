@@ -1,6 +1,162 @@
 # Polymarket Agent — Handoff Document
 
-Last updated: 2026-02-27
+Last updated: 2026-02-28
+
+---
+
+## Session Entry — 2026-02-28 (Review Follow-Up: News `max_results` Wiring)
+
+### Problem
+- Follow-up review of the TA+news additions found a config/application mismatch: `news.max_results` existed in config, but AIAnalyst always queried news providers with a hardcoded `max_results=5`.
+- This made `news.max_results` effectively ignored for prompt enrichment behavior.
+
+### Solution
+- **TDD regression first:** Added a failing AIAnalyst test verifying that attached news providers are called with the configured max-result count.
+- **Minimal AIAnalyst update:** Extended `set_news_provider(...)` with optional `max_results`, persisted as strategy state, and used it in `_fetch_news()`.
+- **Orchestrator wiring:** When attaching the shared news provider to AIAnalyst, pass `config.news.max_results` through.
+
+### Edits
+- `src/polymarket_agent/strategies/ai_analyst.py` — added configurable `_news_max_results`, updated `set_news_provider(...)`, and removed hardcoded `5` in `_fetch_news()`
+- `src/polymarket_agent/orchestrator.py` — pass `max_results=self._config.news.max_results` when wiring news provider into AIAnalyst
+- `tests/test_ai_analyst.py` — added `test_prompt_uses_configured_news_max_results`
+- `HANDOFF.md` — added this review follow-up entry; removed oldest session entry to keep last 10 entries
+
+### NOT Changed
+- No changes to technical indicator formulas or TechnicalAnalyst signal logic.
+- No changes to provider implementations (`google_rss`, `tavily`, cache/rate-limit behavior).
+- No DB schema changes.
+
+### Verification
+```bash
+uv run python -m pytest tests/test_ai_analyst.py::test_prompt_uses_configured_news_max_results -q   # failed first, then passed after fix
+uv run python -m pytest tests/test_ai_analyst.py tests/test_orchestrator.py -q                       # 28 passed
+ruff check src/polymarket_agent/strategies/ai_analyst.py src/polymarket_agent/orchestrator.py tests/test_ai_analyst.py  # All checks passed
+./.venv/bin/mypy src/polymarket_agent/strategies/ai_analyst.py src/polymarket_agent/orchestrator.py  # Success: no issues found in 2 source files
+```
+
+### Branch
+- Working branch: `main`
+
+---
+
+## Session Entry — 2026-02-28 (Autotune: TA + News Parameter Support)
+
+### Problem
+- The autotune system uses a hardcoded list of known parameter names in `_build_tunable_params()`. New parameters from the TechnicalAnalyst strategy (`ema_fast_period`, `ema_slow_period`, `rsi_period`, `history_fidelity`) and the AIAnalyst strategy (`min_divergence`, `max_calls_per_hour`) were invisible to the tuner.
+- The entire `news` config section (`max_calls_per_hour`, `cache_ttl`, `max_results`) was also not exposed as tunable.
+- The LLM system prompt in `autotune.py` had no guidance about the new parameter types or their trade-offs.
+
+### Solution
+- **Extended `_build_tunable_params()`:** Added 7 new parameter checks in the per-strategy loop: `ema_fast_period` (3–15), `ema_slow_period` (10–50), `rsi_period` (5–30), `history_fidelity` (15–240), `min_divergence` (0.05–0.40), `max_calls_per_hour` (5–100). Added news config section with 3 params gated by `news.enabled`: `max_calls_per_hour` (10–200), `cache_ttl` (60–3600), `max_results` (1–10).
+- **Updated `_SYSTEM_PROMPT`:** Added "PARAMETER GUIDANCE" section explaining what each parameter group controls and how to reason about trade-offs (e.g. shorter EMA = more responsive but noisier, EMA fast must be < slow, higher `min_divergence` = fewer but higher-conviction trades).
+- **Updated README:** Added News Provider section, TechnicalAnalyst strategy docs, updated architecture diagram, config reference, project structure, roadmap, and tech stack.
+
+### Edits
+- `src/polymarket_agent/cli.py` — added 7 new strategy param checks + 3 news param checks (gated) in `_build_tunable_params()`
+- `src/polymarket_agent/autotune.py` — added "PARAMETER GUIDANCE" section to `_SYSTEM_PROMPT`
+- `tests/test_evaluate.py` — added 5 new tests: `test_build_tunable_params_includes_technical_analyst_params`, `test_build_tunable_params_includes_ai_analyst_params`, `test_build_tunable_params_includes_news_params_when_enabled`, `test_build_tunable_params_no_news_params_when_disabled`
+- `README.md` — added TechnicalAnalyst strategy, News Provider section, updated architecture diagram/description, config reference, project structure, roadmap, tech stack
+
+### NOT Changed
+- No changes to `scripts/autotune.sh` — it calls CLI commands which now automatically include the new parameters.
+- No changes to `autotune.py` validation logic — existing min/max clamping handles new params.
+- No changes to strategy logic, execution layer, or DB schema.
+
+### Verification
+```bash
+uv run pytest tests/test_evaluate.py tests/test_autotune.py -v   # 38 passed
+uv run pytest tests/ -q                                           # 390 passed
+ruff check src/                                                    # All checks passed
+uv run mypy src/                                                   # Success: no issues found in 43 source files
+```
+
+### Branch
+- Working branch: `main`
+
+---
+
+## Session Entry — 2026-02-28 (Review Follow-Up: AI Analyst News Prompt Sanitization)
+
+### Problem
+- Reviewed the newest TA+news enhancement and found that news headline text was inserted into AIAnalyst prompts without sanitization.
+- External headline strings could include control characters (or other noisy text) and bypass the existing `_sanitize_text()` safeguards used for market question/description.
+
+### Solution
+- **TDD regression first:** Added a failing test that injects control characters into a news headline and verifies they do not appear in the final LLM prompt.
+- **Minimal hardening fix:** Updated AIAnalyst news prompt formatting to sanitize `title` and `published` fields before interpolation.
+- **Scoped limits for clarity:** Added dedicated max-length constants for news title/date prompt fields.
+
+### Edits
+- `src/polymarket_agent/strategies/ai_analyst.py` — sanitize news title/date in `_format_news_summary()` and add `_MAX_NEWS_TITLE_LEN` / `_MAX_NEWS_PUBLISHED_LEN`
+- `tests/test_ai_analyst.py` — added `test_prompt_sanitizes_news_titles`
+- `HANDOFF.md` — added this review follow-up entry; removed oldest session entry to keep last 10 entries
+
+### NOT Changed
+- No changes to technical indicator computations, TechnicalAnalyst signal logic, or news provider selection/rate-limiting.
+- No changes to orchestrator strategy wiring or DB schema.
+
+### Verification
+```bash
+uv run python -m pytest tests/test_ai_analyst.py::test_prompt_sanitizes_news_titles -q                               # failed first, then passed after fix
+uv run python -m pytest tests/test_ai_analyst.py tests/test_news_provider.py tests/test_technical_analyst.py tests/test_indicators.py -q  # 65 passed
+ruff check src/polymarket_agent/strategies/ai_analyst.py tests/test_ai_analyst.py                                     # All checks passed
+./.venv/bin/mypy src/polymarket_agent/strategies/ai_analyst.py                                                        # Success: no issues found in 1 source file
+```
+
+### Branch
+- Working branch: `main`
+
+---
+
+## Session Entry — 2026-02-28 (Technical Analysis + News Intelligence Enhancement)
+
+### Problem
+- The AI Analyst strategy received only market question, description, and current price when asking the LLM for probability estimates — no quantitative price history context and no real-world news context.
+- `DataProvider.get_price_history()` existed but no strategy used it.
+- No mechanism to fetch recent news headlines relevant to each market.
+
+### Solution
+- **Technical indicators module (Step 1):** New `strategies/indicators.py` with pure-computation EMA, RSI (+ Stochastic RSI), Bollinger Band squeeze detection. Returns `TechnicalContext` Pydantic model. Minimum 21 data points required.
+- **News provider package (Step 2):** New `news/` package with `NewsProvider` protocol, Google News RSS implementation (free, uses `feedparser`), optional Tavily implementation, and cached+rate-limited wrapper reusing existing `TTLCache`.
+- **TechnicalAnalyst strategy (Step 3):** New rule-based strategy implementing `Strategy` ABC. Generates buy/sell signals on EMA crossover + RSI + squeeze confluence. Confidence weighted: EMA divergence (0.4) + RSI extremity (0.3) + squeeze confirmation (0.3).
+- **Enhanced AI Analyst prompt (Step 4):** Modified `_evaluate()` to accept `DataProvider`, fetch price history + compute TA summary, fetch news headlines. Both sections are optional — graceful degradation. Increased `max_tokens` 16→32.
+- **Wiring (Step 5):** Registered `TechnicalAnalyst` in `STRATEGY_REGISTRY`. Added `NewsConfig` to `AppConfig`. Orchestrator builds news provider and wires it into AI Analyst. Updated `config.yaml` with new sections. Added `feedparser>=6.0` dependency.
+
+### Edits
+- `src/polymarket_agent/strategies/indicators.py` — **NEW** EMA, RSI, Squeeze computations + TechnicalContext model
+- `src/polymarket_agent/strategies/technical_analyst.py` — **NEW** rule-based TA strategy
+- `src/polymarket_agent/news/__init__.py` — **NEW** news package init
+- `src/polymarket_agent/news/models.py` — **NEW** NewsItem model
+- `src/polymarket_agent/news/provider.py` — **NEW** NewsProvider protocol
+- `src/polymarket_agent/news/google_rss.py` — **NEW** Google News RSS implementation
+- `src/polymarket_agent/news/tavily_client.py` — **NEW** Tavily implementation (optional)
+- `src/polymarket_agent/news/cached.py` — **NEW** cached + rate-limited wrapper
+- `src/polymarket_agent/strategies/ai_analyst.py` — added TA context, news context, `set_news_provider()`, enriched prompt
+- `src/polymarket_agent/orchestrator.py` — registered TechnicalAnalyst, added `_build_news_provider()`, wire news into AIAnalyst
+- `src/polymarket_agent/config.py` — added `NewsConfig` model to `AppConfig`
+- `config.yaml` — added `technical_analyst` strategy + `news` config sections, set `min_strategies: 2`
+- `pyproject.toml` — added `feedparser>=6.0` dependency, `tavily` optional dep
+- `tests/test_indicators.py` — **NEW** 18 indicator tests
+- `tests/test_news_provider.py` — **NEW** 12 news provider tests
+- `tests/test_technical_analyst.py` — **NEW** 12 TA strategy tests
+- `tests/test_ai_analyst.py` — added 5 new enrichment tests
+- `docs/plans/2026-02-28-ta-and-news.md` — **NEW** design document
+
+### NOT Changed
+- No changes to existing strategy logic (SignalTrader, MarketMaker, Arbitrageur)
+- No changes to execution layer, MCP server, or dashboard
+- No changes to DB schema
+- All existing tests unaffected (backward-compatible changes)
+
+### Verification
+```bash
+uv run pytest tests/ -v                     # 367 passed
+ruff check src/                              # All checks passed
+uv run mypy src/                             # Only pre-existing dashboard errors (12)
+```
+
+### Branch
+- Working branch: `main`
 
 ---
 
@@ -240,141 +396,6 @@ uv run pytest tests/ -v                  # 315 passed
 uv run ruff check src/ tests/test_ai_analyst.py tests/test_autotune.py tests/test_mcp_server.py  # All checks passed
 uv run mypy src/                         # Success: no issues found in 34 source files
 uv run polymarket-agent autotune --help  # Shows autotune command
-```
-
-### Branch
-- Working branch: `main`
-
----
-
-## Session Entry — 2026-02-27 (Review Follow-Up: Dashboard HTML Simplification)
-
-### Problem
-- Follow-up review of the newly added dashboard UI code found repeated table-rendering logic and inconsistent handling of empty/malformed values in the browser layer.
-- The added sections worked, but repeated string-building patterns made maintenance harder and could surface `NaN`/blank fields in edge cases.
-
-### Solution
-- **Rendering helper extraction:** Added shared helpers in dashboard JS: `toNum()`, `fixed()`, `shortId()`, and `renderRows()` to remove repeated mapping boilerplate.
-- **Safer fetch path:** `fetchJSON()` now throws on non-2xx responses so the status banner reports request failures consistently.
-- **Defensive formatting:** Replaced direct `Number(...).toFixed(...)` usage with safe numeric helpers to avoid malformed-value display issues.
-- **Empty-state rows:** Table rendering now shows a stable “No data” row per section instead of a completely blank table body.
-
-### Edits
-- `src/polymarket_agent/dashboard/static/dashboard.html` — simplified table rendering and added defensive formatting/fetch helpers
-- `HANDOFF.md` — added this review follow-up entry; removed oldest session entry to keep last 10 entries
-
-### NOT Changed
-- No API endpoint changes, no DB changes, and no orchestrator changes in this follow-up.
-- No visual redesign; existing section layout and data semantics remain the same.
-
-### Verification
-```bash
-uv run python -m pytest tests/test_dashboard_api.py tests/test_config_reload.py -q   # 28 passed
-./.venv/bin/ruff check src/polymarket_agent/dashboard/api.py tests/test_dashboard_api.py tests/test_config_reload.py   # All checks passed
-```
-
-### Branch
-- Working branch: `main`
-
----
-
-## Session Entry — 2026-02-27 (Review Follow-Up: Dashboard Strategy Stats Robustness)
-
-### Problem
-- Reviewed the newest dashboard additions (`/api/positions`, `/api/strategy-performance`, `/api/config-changes`, `/api/conditional-orders`) from the top handoff entry.
-- Found a robustness bug in `/api/strategy-performance`: non-numeric trade sizes (for example `None` or malformed strings) raised `ValueError` and returned a 500.
-- Found duplication in strategy stats aggregation (bucket initialization repeated in both trade and signal loops).
-
-### Solution
-- **TDD regression coverage first:** Added a failing test that exercises malformed trade sizes in `/api/strategy-performance`.
-- **Robust numeric parsing:** Added `_to_float(...)` helper and switched strategy/position math to use it.
-- **Simplified stats aggregation:** Added `StrategyStats` `TypedDict` and `_get_strategy_stats_bucket(...)` helper to remove duplicate initialization logic while keeping payload shape unchanged.
-- **Defensive side handling:** Only applies net P&L math to recognized `buy`/`sell` sides; unknown sides no longer skew totals.
-
-### Edits
-- `src/polymarket_agent/dashboard/api.py` — added `_to_float(...)`, `StrategyStats`, `_get_strategy_stats_bucket(...)`; simplified strategy aggregation and hardened numeric conversion
-- `tests/test_dashboard_api.py` — added regression test for malformed trade size handling in `/api/strategy-performance`
-- `HANDOFF.md` — added this review follow-up entry; removed oldest session entry to keep last 10 entries
-
-### NOT Changed
-- No DB schema changes, no orchestrator reload logic changes, and no dashboard HTML changes in this follow-up.
-- No changes to existing endpoint URLs or response field names.
-
-### Verification
-```bash
-uv run python -m pytest tests/test_dashboard_api.py tests/test_config_reload.py -q   # 28 passed
-./.venv/bin/ruff check src/polymarket_agent/dashboard/api.py tests/test_dashboard_api.py tests/test_config_reload.py   # All checks passed
-./.venv/bin/mypy src/polymarket_agent/dashboard/api.py   # Success: no issues found in 1 source file
-```
-
-### Branch
-- Working branch: `main`
-
----
-
-## Session Entry — 2026-02-27 (Dashboard Enhancement: 4 New Sections)
-
-### Problem
-- The monitoring dashboard showed only basic stats (balance, total value, P&L chart, recent trades, recent signals). Missing per-position P&L, per-strategy performance, config change history, and conditional order status.
-
-### Solution
-- **DB layer (Step 1):** Added `config_changes` table to `_create_tables()` for storing config diffs. Added 3 new methods: `record_config_change()`, `get_config_changes()`, `get_all_conditional_orders()`.
-- **Orchestrator (Step 2):** Added `_compute_config_diff()` static method that recursively walks two AppConfig dicts and returns `{dotted_path: {old, new}}` for all differences. Modified `reload_config()` to persist non-empty diffs via `record_config_change()`.
-- **API (Step 3):** Added 4 new FastAPI endpoints: `/api/positions` (per-position P&L), `/api/strategy-performance` (trade/signal stats per strategy), `/api/config-changes` (diff history), `/api/conditional-orders` (all statuses).
-- **Dashboard HTML (Step 4):** Added 4 new sections with tables (Open Positions, Strategy Performance, Conditional Orders, Config Change History) plus CSS badge classes for order types/statuses and diff coloring. JS `refresh()` now fetches all 8 endpoints in parallel.
-- **Tests (Step 5):** 8 new dashboard API tests + 2 new config reload tests. All 288 tests pass.
-
-### Edits
-- `src/polymarket_agent/db.py` — added `config_changes` table, `record_config_change()`, `get_config_changes()`, `get_all_conditional_orders()`
-- `src/polymarket_agent/orchestrator.py` — added `_compute_config_diff()` static method; modified `reload_config()` to record diffs
-- `src/polymarket_agent/dashboard/api.py` — added 4 new endpoints: `/api/positions`, `/api/strategy-performance`, `/api/config-changes`, `/api/conditional-orders`
-- `src/polymarket_agent/dashboard/static/dashboard.html` — added 4 new HTML sections, CSS badge classes, JS rendering for all 4 sections
-- `tests/test_dashboard_api.py` — 8 new tests; updated mock portfolio to include `current_price`
-- `tests/test_config_reload.py` — 2 new tests for config diff recording
-
-### NOT Changed
-- No changes to strategy logic, MCP server, execution layer, or CLI commands.
-- No changes to existing API endpoints or their response shapes.
-
-### Verification
-```bash
-uv run pytest tests/test_dashboard_api.py tests/test_config_reload.py -v   # 27 passed
-uv run pytest tests/ -v                                                      # 288 passed
-uv run ruff check src/ tests/test_dashboard_api.py tests/test_config_reload.py  # All checks passed
-```
-
-### Branch
-- Working branch: `main`
-
----
-
-## Session Entry — 2026-02-27 (Review Follow-Up: Evaluate Helper Simplification)
-
-### Problem
-- Reviewed the newest auto-tuning additions from the top handoff entry (`Automated Strategy Tuning`), focusing on `evaluate` helper paths.
-- Found cleanup opportunities in the new evaluate helpers:
-  - `_build_summary()` accepted extra parameters that were never used.
-  - `_analyze_trades()` built intermediate buy/sell/size lists when simple counters/accumulators were sufficient.
-
-### Solution
-- **Simplified `_analyze_trades()` implementation:** Replaced list materialization with a single-pass counter/accumulator loop for buys, sells, and total size while preserving output shape.
-- **Simplified `_build_summary()` interface:** Removed unused parameters and updated call sites/tests to pass only `metrics`, matching actual usage.
-- **Behavior preserved:** JSON payload schema and summary content rules remain unchanged.
-
-### Edits
-- `src/polymarket_agent/cli.py` — simplified `_analyze_trades()` internals; removed unused `_build_summary()` parameters and updated caller
-- `tests/test_evaluate.py` — updated helper tests for the simplified `_build_summary()` signature
-- `HANDOFF.md` — added this review follow-up entry; removed oldest session entry to keep last 10 entries
-
-### NOT Changed
-- No changes to hot-reload behavior, orchestrator config reload logic, or auto-tune script/plist wiring in this follow-up.
-- No changes to strategy logic, execution behavior, or MCP tools.
-
-### Verification
-```bash
-uv run python -m pytest tests/test_evaluate.py -q   # 13 passed
-uv run ruff check src/polymarket_agent/cli.py tests/test_evaluate.py   # All checks passed
-uv run mypy src/polymarket_agent/cli.py   # Success: no issues found in 1 source file
 ```
 
 ### Branch

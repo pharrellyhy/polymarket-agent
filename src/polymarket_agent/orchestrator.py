@@ -14,6 +14,10 @@ from polymarket_agent.db import Database
 from polymarket_agent.execution.base import Executor, Order, Portfolio
 from polymarket_agent.execution.paper import PaperTrader
 from polymarket_agent.monitoring.alerts import AlertManager, ConsoleAlertSink, WebhookAlertSink
+from polymarket_agent.news.cached import CachedNewsProvider
+from polymarket_agent.news.google_rss import GoogleRSSProvider
+from polymarket_agent.news.provider import NewsProvider
+from polymarket_agent.news.tavily_client import TavilyProvider
 from polymarket_agent.orders import ConditionalOrder, OrderStatus, OrderType
 from polymarket_agent.position_sizing import PositionSizer
 from polymarket_agent.strategies.aggregator import aggregate_signals
@@ -23,6 +27,7 @@ from polymarket_agent.strategies.base import Signal, Strategy
 from polymarket_agent.strategies.exit_manager import ExitManager
 from polymarket_agent.strategies.market_maker import MarketMaker
 from polymarket_agent.strategies.signal_trader import SignalTrader
+from polymarket_agent.strategies.technical_analyst import TechnicalAnalyst
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +36,7 @@ STRATEGY_REGISTRY: dict[str, type[Strategy]] = {
     "market_maker": MarketMaker,
     "arbitrageur": Arbitrageur,
     "ai_analyst": AIAnalyst,
+    "technical_analyst": TechnicalAnalyst,
 }
 
 
@@ -61,6 +67,7 @@ class Orchestrator:
         self._data: DataProvider = data_provider if data_provider is not None else PolymarketData()
         self._db = Database(db_path)
         self._executor = self._build_executor(config, self._db)
+        self._news_provider: NewsProvider | None = self._build_news_provider(config)
         self._strategies = self._load_strategies(config.strategies)
         self._exit_manager = ExitManager(config.exit_manager)
         self._sizer = PositionSizer(
@@ -125,8 +132,7 @@ class Orchestrator:
                     trades_executed += 1
                     self._record_signal(signal, status="executed")
                     self._alerts.alert(
-                        f"Exit trade: {signal.side} {signal.size:.2f} USDC "
-                        f"on {signal.market_id} ({signal.reason})"
+                        f"Exit trade: {signal.side} {signal.size:.2f} USDC " f"on {signal.market_id} ({signal.reason})"
                     )
                     self._db.cancel_conditional_orders_for_token(signal.token_id)
                 else:
@@ -249,6 +255,7 @@ class Orchestrator:
             )
 
         self._config = new_config
+        self._news_provider = self._build_news_provider(new_config)
         self._strategies = self._load_strategies(new_config.strategies)
         self._sizer = PositionSizer(
             method=new_config.position_sizing.method,
@@ -288,7 +295,12 @@ class Orchestrator:
                 portfolio = self._executor.get_portfolio()
                 if order.token_id not in portfolio.positions:
                     self._db.update_conditional_order(order.id, status=OrderStatus.CANCELLED)
-                    logger.info("Cancelled stale %s order %d — no position for token %s", order.order_type.value, order.id, order.token_id)
+                    logger.info(
+                        "Cancelled stale %s order %d — no position for token %s",
+                        order.order_type.value,
+                        order.id,
+                        order.token_id,
+                    )
                     continue
 
                 signal = Signal(
@@ -567,6 +579,25 @@ class Orchestrator:
         except Exception:
             logger.debug("Failed to record portfolio snapshot", exc_info=True)
 
+    @staticmethod
+    def _build_news_provider(config: AppConfig) -> NewsProvider | None:
+        """Create a news provider based on config, or None if disabled."""
+        news_cfg = config.news
+        if not news_cfg.enabled:
+            return None
+
+        inner: NewsProvider
+        if news_cfg.provider == "tavily":
+            inner = TavilyProvider(api_key_env=news_cfg.api_key_env)
+        else:
+            inner = GoogleRSSProvider()
+
+        return CachedNewsProvider(
+            inner,
+            cache_ttl=float(news_cfg.cache_ttl),
+            max_calls_per_hour=news_cfg.max_calls_per_hour,
+        )
+
     def _load_strategies(self, strategy_configs: dict[str, dict[str, Any]]) -> list[Strategy]:
         """Instantiate and configure strategies listed in config."""
         strategies: list[Strategy] = []
@@ -580,6 +611,9 @@ class Orchestrator:
                 continue
             instance = cls()
             instance.configure(params)
+            # Wire news provider into AI analyst
+            if isinstance(instance, AIAnalyst) and self._news_provider is not None:
+                instance.set_news_provider(self._news_provider, max_results=self._config.news.max_results)
             strategies.append(instance)
             logger.info("Loaded strategy: %s", name)
         return strategies

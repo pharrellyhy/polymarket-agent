@@ -87,12 +87,22 @@ class TestConditionalOrderDB:
     def test_multiple_orders(self, tmp_path: Path) -> None:
         db = Database(tmp_path / "test.db")
         db.create_conditional_order(
-            token_id="0xtok1", market_id="100", order_type=OrderType.STOP_LOSS,
-            trigger_price=0.40, size=10.0, parent_strategy="s1", reason="SL",
+            token_id="0xtok1",
+            market_id="100",
+            order_type=OrderType.STOP_LOSS,
+            trigger_price=0.40,
+            size=10.0,
+            parent_strategy="s1",
+            reason="SL",
         )
         db.create_conditional_order(
-            token_id="0xtok2", market_id="200", order_type=OrderType.TAKE_PROFIT,
-            trigger_price=0.90, size=20.0, parent_strategy="s2", reason="TP",
+            token_id="0xtok2",
+            market_id="200",
+            order_type=OrderType.TAKE_PROFIT,
+            trigger_price=0.90,
+            size=20.0,
+            parent_strategy="s2",
+            reason="TP",
         )
         orders = db.get_active_conditional_orders()
         assert len(orders) == 2
@@ -112,17 +122,28 @@ class TestConditionalOrderChecking:
         )
         with patch("polymarket_agent.orchestrator.PolymarketData"):
             from polymarket_agent.orchestrator import Orchestrator
+
             orch = Orchestrator(config=cfg, db_path=tmp_path / "test.db")
         return orch
 
     def test_stop_loss_triggers_sell(self, tmp_path: Path) -> None:
         orch = self._make_orchestrator(tmp_path)
         orch.db.create_conditional_order(
-            token_id="0xtok1", market_id="100", order_type=OrderType.STOP_LOSS,
-            trigger_price=0.50, size=25.0, parent_strategy="test", reason="SL test",
+            token_id="0xtok1",
+            market_id="100",
+            order_type=OrderType.STOP_LOSS,
+            trigger_price=0.50,
+            size=25.0,
+            parent_strategy="test",
+            reason="SL test",
         )
         # Need a position for the sell to execute
-        orch._executor._positions["0xtok1"] = {"market_id": "100", "shares": 100.0, "avg_price": 0.60, "current_price": 0.45}
+        orch._executor._positions["0xtok1"] = {
+            "market_id": "100",
+            "shares": 100.0,
+            "avg_price": 0.60,
+            "current_price": 0.45,
+        }
         # Mock price below trigger
         orch._data.get_price.return_value = Spread(token_id="0xtok1", bid=0.45, ask=0.50, spread=0.05)
         triggered = orch._check_conditional_orders()
@@ -133,8 +154,13 @@ class TestConditionalOrderChecking:
     def test_stop_loss_does_not_trigger_above(self, tmp_path: Path) -> None:
         orch = self._make_orchestrator(tmp_path)
         orch.db.create_conditional_order(
-            token_id="0xtok1", market_id="100", order_type=OrderType.STOP_LOSS,
-            trigger_price=0.50, size=25.0, parent_strategy="test", reason="SL test",
+            token_id="0xtok1",
+            market_id="100",
+            order_type=OrderType.STOP_LOSS,
+            trigger_price=0.50,
+            size=25.0,
+            parent_strategy="test",
+            reason="SL test",
         )
         orch._data.get_price.return_value = Spread(token_id="0xtok1", bid=0.55, ask=0.60, spread=0.05)
         triggered = orch._check_conditional_orders()
@@ -145,13 +171,23 @@ class TestConditionalOrderChecking:
     def test_take_profit_triggers_sell(self, tmp_path: Path) -> None:
         orch = self._make_orchestrator(tmp_path)
         orch.db.create_conditional_order(
-            token_id="0xtok1", market_id="100", order_type=OrderType.TAKE_PROFIT,
-            trigger_price=0.80, size=25.0, parent_strategy="test", reason="TP test",
+            token_id="0xtok1",
+            market_id="100",
+            order_type=OrderType.TAKE_PROFIT,
+            trigger_price=0.80,
+            size=25.0,
+            parent_strategy="test",
+            reason="TP test",
         )
         orch._data.get_price.return_value = Spread(token_id="0xtok1", bid=0.85, ask=0.90, spread=0.05)
 
         # Need to have a position to sell
-        orch._executor._positions["0xtok1"] = {"market_id": "100", "shares": 50.0, "avg_price": 0.50, "current_price": 0.85}
+        orch._executor._positions["0xtok1"] = {
+            "market_id": "100",
+            "shares": 50.0,
+            "avg_price": 0.50,
+            "current_price": 0.85,
+        }
 
         triggered = orch._check_conditional_orders()
         assert triggered == 1
@@ -160,12 +196,22 @@ class TestConditionalOrderChecking:
     def test_triggered_order_cancels_sibling_orders_when_position_closes(self, tmp_path: Path) -> None:
         orch = self._make_orchestrator(tmp_path)
         orch.db.create_conditional_order(
-            token_id="0xtok1", market_id="100", order_type=OrderType.STOP_LOSS,
-            trigger_price=0.50, size=25.0, parent_strategy="test", reason="SL test",
+            token_id="0xtok1",
+            market_id="100",
+            order_type=OrderType.STOP_LOSS,
+            trigger_price=0.50,
+            size=25.0,
+            parent_strategy="test",
+            reason="SL test",
         )
         orch.db.create_conditional_order(
-            token_id="0xtok1", market_id="100", order_type=OrderType.TAKE_PROFIT,
-            trigger_price=0.80, size=25.0, parent_strategy="test", reason="TP test",
+            token_id="0xtok1",
+            market_id="100",
+            order_type=OrderType.TAKE_PROFIT,
+            trigger_price=0.80,
+            size=25.0,
+            parent_strategy="test",
+            reason="TP test",
         )
         orch._executor._positions["0xtok1"] = {
             "market_id": "100",
@@ -183,9 +229,15 @@ class TestConditionalOrderChecking:
     def test_trailing_stop_updates_watermark(self, tmp_path: Path) -> None:
         orch = self._make_orchestrator(tmp_path)
         orch.db.create_conditional_order(
-            token_id="0xtok1", market_id="100", order_type=OrderType.TRAILING_STOP,
-            trigger_price=0.0, size=25.0, high_watermark=0.60, trail_percent=0.10,
-            parent_strategy="test", reason="Trail test",
+            token_id="0xtok1",
+            market_id="100",
+            order_type=OrderType.TRAILING_STOP,
+            trigger_price=0.0,
+            size=25.0,
+            high_watermark=0.60,
+            trail_percent=0.10,
+            parent_strategy="test",
+            reason="Trail test",
         )
         # Price above watermark => update
         orch._data.get_price.return_value = Spread(token_id="0xtok1", bid=0.70, ask=0.75, spread=0.05)
@@ -198,14 +250,25 @@ class TestConditionalOrderChecking:
     def test_trailing_stop_triggers_on_drop(self, tmp_path: Path) -> None:
         orch = self._make_orchestrator(tmp_path)
         orch.db.create_conditional_order(
-            token_id="0xtok1", market_id="100", order_type=OrderType.TRAILING_STOP,
-            trigger_price=0.0, size=25.0, high_watermark=0.80, trail_percent=0.10,
-            parent_strategy="test", reason="Trail test",
+            token_id="0xtok1",
+            market_id="100",
+            order_type=OrderType.TRAILING_STOP,
+            trigger_price=0.0,
+            size=25.0,
+            high_watermark=0.80,
+            trail_percent=0.10,
+            parent_strategy="test",
+            reason="Trail test",
         )
         # Threshold = 0.80 * (1 - 0.10) = 0.72, bid=0.70 triggers
         orch._data.get_price.return_value = Spread(token_id="0xtok1", bid=0.70, ask=0.75, spread=0.05)
 
-        orch._executor._positions["0xtok1"] = {"market_id": "100", "shares": 50.0, "avg_price": 0.50, "current_price": 0.70}
+        orch._executor._positions["0xtok1"] = {
+            "market_id": "100",
+            "shares": 50.0,
+            "avg_price": 0.50,
+            "current_price": 0.70,
+        }
 
         triggered = orch._check_conditional_orders()
         assert triggered == 1
@@ -214,8 +277,13 @@ class TestConditionalOrderChecking:
     def test_price_fetch_failure_skips_order(self, tmp_path: Path) -> None:
         orch = self._make_orchestrator(tmp_path)
         orch.db.create_conditional_order(
-            token_id="0xtok1", market_id="100", order_type=OrderType.STOP_LOSS,
-            trigger_price=0.50, size=25.0, parent_strategy="test", reason="SL test",
+            token_id="0xtok1",
+            market_id="100",
+            order_type=OrderType.STOP_LOSS,
+            trigger_price=0.50,
+            size=25.0,
+            parent_strategy="test",
+            reason="SL test",
         )
         orch._data.get_price.side_effect = RuntimeError("CLI failed")
         triggered = orch._check_conditional_orders()
@@ -237,12 +305,20 @@ class TestAutoConditionalOrders:
         )
         with patch("polymarket_agent.orchestrator.PolymarketData"):
             from polymarket_agent.orchestrator import Orchestrator
+
             orch = Orchestrator(config=cfg, db_path=tmp_path / "test.db")
 
         from polymarket_agent.strategies.base import Signal
+
         signal = Signal(
-            strategy="test", market_id="100", token_id="0xtok1",
-            side="buy", confidence=0.8, target_price=0.60, size=25.0, reason="test",
+            strategy="test",
+            market_id="100",
+            token_id="0xtok1",
+            side="buy",
+            confidence=0.8,
+            target_price=0.60,
+            size=25.0,
+            reason="test",
         )
         orch._auto_create_conditional_orders(signal)
         orders = orch.db.get_active_conditional_orders()
@@ -258,12 +334,20 @@ class TestAutoConditionalOrders:
         )
         with patch("polymarket_agent.orchestrator.PolymarketData"):
             from polymarket_agent.orchestrator import Orchestrator
+
             orch = Orchestrator(config=cfg, db_path=tmp_path / "test.db")
 
         from polymarket_agent.strategies.base import Signal
+
         signal = Signal(
-            strategy="test", market_id="100", token_id="0xtok1",
-            side="buy", confidence=0.8, target_price=0.60, size=25.0, reason="test",
+            strategy="test",
+            market_id="100",
+            token_id="0xtok1",
+            side="buy",
+            confidence=0.8,
+            target_price=0.60,
+            size=25.0,
+            reason="test",
         )
         orch._auto_create_conditional_orders(signal)
         orders = orch.db.get_active_conditional_orders()
@@ -279,12 +363,20 @@ class TestAutoConditionalOrders:
         )
         with patch("polymarket_agent.orchestrator.PolymarketData"):
             from polymarket_agent.orchestrator import Orchestrator
+
             orch = Orchestrator(config=cfg, db_path=tmp_path / "test.db")
 
         from polymarket_agent.strategies.base import Signal
+
         signal = Signal(
-            strategy="test", market_id="100", token_id="0xtok1",
-            side="sell", confidence=0.8, target_price=0.60, size=25.0, reason="test",
+            strategy="test",
+            market_id="100",
+            token_id="0xtok1",
+            side="sell",
+            confidence=0.8,
+            target_price=0.60,
+            size=25.0,
+            reason="test",
         )
         orch._auto_create_conditional_orders(signal)
         orders = orch.db.get_active_conditional_orders()
@@ -298,12 +390,20 @@ class TestAutoConditionalOrders:
         )
         with patch("polymarket_agent.orchestrator.PolymarketData"):
             from polymarket_agent.orchestrator import Orchestrator
+
             orch = Orchestrator(config=cfg, db_path=tmp_path / "test.db")
 
         from polymarket_agent.strategies.base import Signal
+
         signal = Signal(
-            strategy="test", market_id="100", token_id="0xtok1",
-            side="buy", confidence=0.8, target_price=0.60, size=25.0, reason="test",
+            strategy="test",
+            market_id="100",
+            token_id="0xtok1",
+            side="buy",
+            confidence=0.8,
+            target_price=0.60,
+            size=25.0,
+            reason="test",
             stop_loss=0.40,
         )
         orch._auto_create_conditional_orders(signal)

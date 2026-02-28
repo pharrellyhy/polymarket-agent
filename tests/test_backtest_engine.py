@@ -23,12 +23,54 @@ def _write_csv(path: Path, rows: list[dict[str, str]]) -> None:
 def _sample_rows() -> list[dict[str, str]]:
     """Two markets over 3 days with prices moving to generate signals."""
     return [
-        {"timestamp": "2024-01-01", "market_id": "100", "question": "Will X?", "yes_price": "0.30", "volume": "50000", "token_id": "0xtok1"},
-        {"timestamp": "2024-01-01", "market_id": "200", "question": "Will Y?", "yes_price": "0.70", "volume": "30000", "token_id": "0xtok2"},
-        {"timestamp": "2024-01-02", "market_id": "100", "question": "Will X?", "yes_price": "0.35", "volume": "55000", "token_id": "0xtok1"},
-        {"timestamp": "2024-01-02", "market_id": "200", "question": "Will Y?", "yes_price": "0.65", "volume": "32000", "token_id": "0xtok2"},
-        {"timestamp": "2024-01-03", "market_id": "100", "question": "Will X?", "yes_price": "0.40", "volume": "60000", "token_id": "0xtok1"},
-        {"timestamp": "2024-01-03", "market_id": "200", "question": "Will Y?", "yes_price": "0.60", "volume": "35000", "token_id": "0xtok2"},
+        {
+            "timestamp": "2024-01-01",
+            "market_id": "100",
+            "question": "Will X?",
+            "yes_price": "0.30",
+            "volume": "50000",
+            "token_id": "0xtok1",
+        },
+        {
+            "timestamp": "2024-01-01",
+            "market_id": "200",
+            "question": "Will Y?",
+            "yes_price": "0.70",
+            "volume": "30000",
+            "token_id": "0xtok2",
+        },
+        {
+            "timestamp": "2024-01-02",
+            "market_id": "100",
+            "question": "Will X?",
+            "yes_price": "0.35",
+            "volume": "55000",
+            "token_id": "0xtok1",
+        },
+        {
+            "timestamp": "2024-01-02",
+            "market_id": "200",
+            "question": "Will Y?",
+            "yes_price": "0.65",
+            "volume": "32000",
+            "token_id": "0xtok2",
+        },
+        {
+            "timestamp": "2024-01-03",
+            "market_id": "100",
+            "question": "Will X?",
+            "yes_price": "0.40",
+            "volume": "60000",
+            "token_id": "0xtok1",
+        },
+        {
+            "timestamp": "2024-01-03",
+            "market_id": "200",
+            "question": "Will Y?",
+            "yes_price": "0.60",
+            "volume": "35000",
+            "token_id": "0xtok2",
+        },
     ]
 
 

@@ -8,7 +8,9 @@ Agent-friendly auto-trading pipeline for Polymarket prediction markets.
 ## Features
 
 - **Typed Python API** — wraps the Polymarket CLI into Pydantic v2 models (Market, Event, OrderBook, Price)
-- **Pluggable strategy engine** — SignalTrader, MarketMaker, Arbitrageur, and AIAnalyst (Anthropic/OpenAI) modules
+- **Pluggable strategy engine** — SignalTrader, MarketMaker, Arbitrageur, TechnicalAnalyst, and AIAnalyst (Anthropic/OpenAI) modules
+- **Technical analysis** — EMA crossover, RSI/Stochastic RSI, Bollinger Band squeeze detection from price history
+- **News intelligence** — Google News RSS (free) or Tavily search for real-world context, with TTL caching and rate limiting
 - **Paper trading** — simulated order fills against real order-book data, logged to SQLite
 - **Live trading** — real order placement via py-clob-client with private key signing
 - **MCP server** — 22 tools for AI agent integration (market data, trading, signals, conditional orders, backtesting, monitoring)
@@ -28,6 +30,7 @@ Agent-friendly auto-trading pipeline for Polymarket prediction markets.
 flowchart LR
     CLI["polymarket CLI<br/>(Homebrew)"]
     Data["PolymarketData<br/>+ TTLCache"]
+    News["News Provider<br/>(Google RSS / Tavily)"]
     Strat["Strategy Engine<br/>(Multiple Strategies)"]
     Exec["Executor<br/>(PaperTrader)"]
     DB[(SQLite)]
@@ -38,15 +41,17 @@ flowchart LR
     CLI -->|JSON| Data
     Orch --> Data
     Orch --> Strat
+    Orch --> News
     Orch --> Exec
     Data --> Strat
+    News -->|Headlines| Strat
     Strat -->|Signals| Exec
     Exec --> DB
     Config -->|hot-reload| Orch
     Tune -->|evaluate + edit| Config
 ```
 
-The **Orchestrator** drives a fetch → analyze → execute cycle each tick, hot-reloading `config.yaml` when it detects changes. The **Data Layer** shells out to the `polymarket` CLI with `-o json` and parses responses into Pydantic models. **Strategies** consume market data and emit `Signal` objects. The **Executor** fills orders (paper or live) and persists trades to SQLite. The **Auto-Tune** loop periodically evaluates performance and uses an LLM (Anthropic, OpenAI, or local endpoints) to adjust strategy parameters.
+The **Orchestrator** drives a fetch → analyze → execute cycle each tick, hot-reloading `config.yaml` when it detects changes. The **Data Layer** shells out to the `polymarket` CLI with `-o json` and parses responses into Pydantic models. **Strategies** consume market data and emit `Signal` objects — the TechnicalAnalyst uses price history for indicator-based signals, while the AIAnalyst enriches its LLM prompt with both technical analysis and recent news headlines. The **News Provider** fetches headlines via Google News RSS (free) or Tavily, with caching and rate limiting. The **Executor** fills orders (paper or live) and persists trades to SQLite. The **Auto-Tune** loop periodically evaluates performance and uses an LLM (Anthropic, OpenAI, or local endpoints) to adjust strategy parameters.
 
 ## Quick Start
 
@@ -113,7 +118,7 @@ Orders are placed as GTC (Good-Til-Cancelled) limit orders on the CLOB. If you u
 
 ### Strategies
 
-Four pluggable strategies are available, each enabled independently in `config.yaml`:
+Five pluggable strategies are available, each enabled independently in `config.yaml`:
 
 **SignalTrader** — directional signals based on volume and price deviation from 0.50.
 
@@ -153,7 +158,23 @@ strategies:
 
 When the sum of outcome prices deviates from 1.0 beyond tolerance, buys the underpriced side (if sum < 1.0) or sells the overpriced side (if sum > 1.0). Confidence scales with deviation magnitude.
 
-**AIAnalyst** — uses an LLM to estimate market probabilities and trades on divergence.
+**TechnicalAnalyst** — rule-based signals from price history indicators (EMA crossover, RSI, Bollinger squeeze).
+
+```yaml
+strategies:
+  technical_analyst:
+    enabled: true
+    ema_fast_period: 8       # fast EMA period (shorter than stock 12 — prediction markets are shorter-lived)
+    ema_slow_period: 21      # slow EMA period
+    rsi_period: 14           # RSI lookback period
+    history_interval: "1w"   # price history lookback window
+    history_fidelity: 60     # data points per interval
+    order_size: 25.0         # USDC per trade
+```
+
+Fetches price history for each market and computes EMA crossover, RSI (with Stochastic RSI), and Bollinger Band squeeze indicators. Generates buy signals on bullish EMA crossover with RSI not overbought and squeeze confirmation; sell signals on bearish crossover with RSI not oversold. Confidence is a weighted blend: EMA divergence (40%), RSI extremity (30%), squeeze confirmation (30%). Skips markets with fewer than 21 data points or prices near 0 or 1.
+
+**AIAnalyst** — uses an LLM to estimate market probabilities, enriched with technical analysis and news context.
 
 ```yaml
 strategies:
@@ -168,17 +189,22 @@ strategies:
     # api_key_env: OPENAI_API_KEY          # env var name for API key
 ```
 
-Sends each market's question and description to the configured LLM provider, parses a probability from the response. If the estimate diverges from the market price by more than `min_divergence`, generates a buy or sell signal. Supports both Anthropic (default) and OpenAI-compatible providers, including local models served via Ollama or vLLM. Requires the appropriate API key (`ANTHROPIC_API_KEY` or `OPENAI_API_KEY`). Gracefully disabled when the key is not set.
+Sends each market's question and description to the configured LLM provider, parses a probability from the response. If the estimate diverges from the market price by more than `min_divergence`, generates a buy or sell signal. The prompt is enriched with optional context when available:
+
+- **Technical analysis** — price trend, EMA crossover direction, RSI reading, and volatility state (computed from price history)
+- **Recent news** — up to 5 headlines relevant to the market question (fetched via the configured news provider)
+
+Both sections are optional — the strategy gracefully degrades if price history or news is unavailable. Supports both Anthropic (default) and OpenAI-compatible providers, including local models served via Ollama or vLLM. Requires the appropriate API key (`ANTHROPIC_API_KEY` or `OPENAI_API_KEY`). Gracefully disabled when the key is not set.
 
 **Signal Aggregation** — all strategy signals pass through an aggregation step before execution:
 
 ```yaml
 aggregation:
-  min_confidence: 0.5    # drop signals below this threshold
-  min_strategies: 1      # require N strategies to agree on a market
+  min_confidence: 0.3    # drop signals below this threshold
+  min_strategies: 2      # require N strategies to agree on a market (e.g. AI + Technical)
 ```
 
-Signals are deduplicated per market, filtered by confidence, and optionally require cross-strategy consensus.
+Signals are deduplicated per market, filtered by confidence, and optionally require cross-strategy consensus. With `min_strategies: 2`, a trade only executes when multiple strategies independently agree (e.g. both AIAnalyst and TechnicalAnalyst signal the same direction).
 
 ### Risk Management
 
@@ -375,6 +401,25 @@ The dashboard includes:
 | `GET /api/conditional-orders?limit=50` | All conditional orders (active, triggered, cancelled) |
 | `GET /api/config-changes?limit=20` | Config hot-reload diff history |
 
+### News Provider
+
+The news provider fetches recent headlines to give the AIAnalyst real-world context for each market question. Two providers are available:
+
+```yaml
+news:
+  enabled: true
+  provider: google_rss        # google_rss (free, no API key) or tavily (1k free/month)
+  api_key_env: TAVILY_API_KEY  # only needed for tavily provider
+  max_calls_per_hour: 50      # rate limit across all queries
+  cache_ttl: 900              # cache headlines for 15 minutes
+  max_results: 5              # headlines per market
+```
+
+- **Google RSS** (default) — parses Google News RSS feeds. Free, no authentication, no API key needed. Uses the `feedparser` library.
+- **Tavily** — structured, LLM-optimized search results via the Tavily API. Requires `TAVILY_API_KEY` and the `tavily-python` package (`pip install polymarket-agent[tavily]`). 1,000 free searches per month.
+
+All queries are cached (default 15 minutes) and rate-limited. When the rate limit is exhausted or the provider is unavailable, the AIAnalyst prompt simply omits the news section and continues without it.
+
 ### Performance Reporting
 
 Review trading performance with built-in analytics:
@@ -489,6 +534,7 @@ See `deploy/env.example` for all available environment variables.
 | `POLYMARKET_FUNDER` | Funder address for Magic/proxy wallets | Optional (live mode) |
 | `ANTHROPIC_API_KEY` | API key for AIAnalyst / autotune (Anthropic provider) | AI features only |
 | `OPENAI_API_KEY` | API key for AIAnalyst / autotune (OpenAI provider) | OpenAI provider only |
+| `TAVILY_API_KEY` | API key for Tavily news provider | Tavily news only |
 
 See [`deploy/env.example`](deploy/env.example) for all available variables.
 
@@ -523,10 +569,18 @@ strategies:
     # provider: anthropic       # anthropic (default) or openai
     # base_url: null             # for local/custom OpenAI-compatible endpoints
     # api_key_env: null          # override env var name for API key
+  technical_analyst:
+    enabled: true
+    ema_fast_period: 8
+    ema_slow_period: 21
+    rsi_period: 14
+    history_interval: "1w"
+    history_fidelity: 60
+    order_size: 25.0
 
 aggregation:
-  min_confidence: 0.5
-  min_strategies: 1
+  min_confidence: 0.3
+  min_strategies: 2
 
 risk:
   max_position_size: 100.0
@@ -548,6 +602,14 @@ position_sizing:
 backtest:
   default_spread: 0.02
   snapshot_interval: 86400
+
+news:
+  enabled: true
+  provider: google_rss       # google_rss (free) or tavily (1k free/month)
+  api_key_env: TAVILY_API_KEY # only needed for tavily
+  max_calls_per_hour: 50
+  cache_ttl: 900             # 15 minutes
+  max_results: 5
 
 monitoring:
   structured_logging: false
@@ -579,12 +641,20 @@ src/polymarket_agent/
 │   ├── models.py           # Pydantic models (Market, Event, OrderBook, …)
 │   ├── provider.py         # DataProvider protocol
 │   └── cache.py            # In-memory TTL cache
+├── news/
+│   ├── models.py           # NewsItem model
+│   ├── provider.py         # NewsProvider protocol
+│   ├── google_rss.py       # Google News RSS provider (free)
+│   ├── tavily_client.py    # Tavily search provider (optional)
+│   └── cached.py           # Cached + rate-limited wrapper
 ├── strategies/
 │   ├── base.py             # Strategy ABC + Signal dataclass
 │   ├── signal_trader.py    # Volume/price-move signal strategy
 │   ├── market_maker.py     # Bid/ask quoting around midpoint
 │   ├── arbitrageur.py      # Price-sum deviation strategy
-│   ├── ai_analyst.py       # LLM-based probability strategy (Anthropic/OpenAI)
+│   ├── ai_analyst.py       # LLM-based probability strategy with TA + news enrichment
+│   ├── technical_analyst.py # Rule-based TA strategy (EMA, RSI, squeeze)
+│   ├── indicators.py       # Technical indicator computations (EMA, RSI, Bollinger)
 │   └── aggregator.py       # Signal dedup/filter/consensus
 ├── backtest/
 │   ├── historical.py       # CSV-based historical data provider
@@ -634,7 +704,8 @@ mypy src/
 | **7. Backtesting** | Done | Historical data replay, performance metrics, DataProvider protocol |
 | **8. Monitoring** | Done | Dashboard, structured logging, alerts, signal/portfolio tracking |
 | **9. Auto-Tuning** | Done | Config hot-reload, evaluate command, multi-provider LLM-driven parameter tuning |
+| **10. TA + News** | Done | Technical indicators (EMA, RSI, squeeze), news headlines, TechnicalAnalyst strategy, AI prompt enrichment |
 
 ## Tech Stack
 
-Python 3.12 · Pydantic v2 · Typer · SQLite · PyYAML · Anthropic SDK · OpenAI SDK (optional) · FastAPI · Chart.js · ruff · mypy · pytest
+Python 3.12 · Pydantic v2 · Typer · SQLite · PyYAML · Anthropic SDK · OpenAI SDK (optional) · feedparser · Tavily (optional) · FastAPI · Chart.js · ruff · mypy · pytest

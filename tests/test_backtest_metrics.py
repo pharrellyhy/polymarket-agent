@@ -1,6 +1,5 @@
 """Tests for backtest performance metrics."""
 
-
 from polymarket_agent.backtest.metrics import BacktestMetrics, PortfolioSnapshot, compute_metrics
 
 
@@ -55,9 +54,7 @@ class TestComputeMetrics:
         assert metrics.sharpe_ratio > 0
 
     def test_sharpe_ratio_flat(self) -> None:
-        snapshots = [
-            PortfolioSnapshot(timestamp=f"t{i}", balance=1000.0, total_value=1000.0) for i in range(5)
-        ]
+        snapshots = [PortfolioSnapshot(timestamp=f"t{i}", balance=1000.0, total_value=1000.0) for i in range(5)]
         metrics = compute_metrics([], snapshots, 1000.0)
         assert metrics.sharpe_ratio == 0.0
 
@@ -101,8 +98,12 @@ class TestComputeMetrics:
 
     def test_metrics_dataclass(self) -> None:
         m = BacktestMetrics(
-            total_return=0.1, sharpe_ratio=1.5, max_drawdown=0.05,
-            win_rate=0.6, profit_factor=2.0, total_trades=10,
+            total_return=0.1,
+            sharpe_ratio=1.5,
+            max_drawdown=0.05,
+            win_rate=0.6,
+            profit_factor=2.0,
+            total_trades=10,
         )
         assert m.total_return == 0.1
         assert m.total_trades == 10

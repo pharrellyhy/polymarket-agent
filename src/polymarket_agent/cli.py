@@ -553,6 +553,66 @@ def _build_tunable_params(cfg: AppConfig) -> list[dict[str, object]]:
                     "description": f"Price sum deviation threshold for {name} arb detection",
                 }
             )
+        if "ema_fast_period" in strat_cfg:
+            params.append(
+                {
+                    "path": f"strategies.{name}.ema_fast_period",
+                    "current": strat_cfg["ema_fast_period"],
+                    "min": 3,
+                    "max": 15,
+                    "description": f"Fast EMA period for {name} crossover detection",
+                }
+            )
+        if "ema_slow_period" in strat_cfg:
+            params.append(
+                {
+                    "path": f"strategies.{name}.ema_slow_period",
+                    "current": strat_cfg["ema_slow_period"],
+                    "min": 10,
+                    "max": 50,
+                    "description": f"Slow EMA period for {name} crossover detection",
+                }
+            )
+        if "rsi_period" in strat_cfg:
+            params.append(
+                {
+                    "path": f"strategies.{name}.rsi_period",
+                    "current": strat_cfg["rsi_period"],
+                    "min": 5,
+                    "max": 30,
+                    "description": f"RSI lookback period for {name}",
+                }
+            )
+        if "history_fidelity" in strat_cfg:
+            params.append(
+                {
+                    "path": f"strategies.{name}.history_fidelity",
+                    "current": strat_cfg["history_fidelity"],
+                    "min": 15,
+                    "max": 240,
+                    "description": f"Number of price data points per interval for {name}",
+                }
+            )
+        if "min_divergence" in strat_cfg:
+            params.append(
+                {
+                    "path": f"strategies.{name}.min_divergence",
+                    "current": strat_cfg["min_divergence"],
+                    "min": 0.05,
+                    "max": 0.40,
+                    "description": f"Minimum AI-vs-market divergence to trigger a trade for {name}",
+                }
+            )
+        if "max_calls_per_hour" in strat_cfg:
+            params.append(
+                {
+                    "path": f"strategies.{name}.max_calls_per_hour",
+                    "current": strat_cfg["max_calls_per_hour"],
+                    "min": 5,
+                    "max": 100,
+                    "description": f"Maximum LLM API calls per hour for {name}",
+                }
+            )
 
     # Aggregation parameters
     params.append(
@@ -632,6 +692,36 @@ def _build_tunable_params(cfg: AppConfig) -> list[dict[str, object]]:
                 "min": 0.05,
                 "max": 1.00,
                 "description": "Default take-profit percentage above entry price",
+            }
+        )
+
+    # News provider parameters
+    if cfg.news.enabled:
+        params.append(
+            {
+                "path": "news.max_calls_per_hour",
+                "current": cfg.news.max_calls_per_hour,
+                "min": 10,
+                "max": 200,
+                "description": "Maximum news queries per hour across all markets",
+            }
+        )
+        params.append(
+            {
+                "path": "news.cache_ttl",
+                "current": cfg.news.cache_ttl,
+                "min": 60,
+                "max": 3600,
+                "description": "News cache duration in seconds (higher = fewer API calls)",
+            }
+        )
+        params.append(
+            {
+                "path": "news.max_results",
+                "current": cfg.news.max_results,
+                "min": 1,
+                "max": 10,
+                "description": "Number of news headlines to include per market",
             }
         )
 

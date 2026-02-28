@@ -237,3 +237,131 @@ def test_configure_invalid_provider_falls_back_to_default() -> None:
     strategy = AIAnalyst()
     strategy.configure({"provider": "unknown-provider"})
     assert strategy._provider == _DEFAULT_PROVIDER
+
+
+# ------------------------------------------------------------------
+# Technical analysis + news enrichment tests
+# ------------------------------------------------------------------
+
+
+def test_prompt_includes_technical_analysis() -> None:
+    """When price history is available, the prompt should include TA section."""
+    from polymarket_agent.data.models import PricePoint
+
+    strategy = _make_analyst("0.80")
+    data = MagicMock()
+    prices = [PricePoint(timestamp=f"2026-02-{i:02d}T00:00:00Z", price=0.4 + 0.005 * i) for i in range(30)]
+    data.get_price_history.return_value = prices
+
+    strategy.analyze([_make_market("1", yes_price=0.50)], data)
+
+    call_args = strategy._client.messages.create.call_args
+    prompt_content: str = call_args[1]["messages"][0]["content"]
+    assert "TECHNICAL ANALYSIS" in prompt_content
+    assert "Price trend:" in prompt_content
+    assert "EMA crossover:" in prompt_content
+    assert "RSI:" in prompt_content
+
+
+def test_prompt_includes_news_when_provider_set() -> None:
+    """When a news provider is attached, the prompt should include news headlines."""
+    from polymarket_agent.news.models import NewsItem
+
+    strategy = _make_analyst("0.80")
+    news_provider = MagicMock()
+    news_provider.search.return_value = [
+        NewsItem(title="Breaking: Senate vote scheduled", published="2026-02-28"),
+        NewsItem(title="Poll shows 62% support", published="2026-02-27"),
+    ]
+    strategy.set_news_provider(news_provider)
+
+    strategy.analyze([_make_market("1", yes_price=0.50)], MagicMock())
+
+    call_args = strategy._client.messages.create.call_args
+    prompt_content: str = call_args[1]["messages"][0]["content"]
+    assert "RECENT NEWS" in prompt_content
+    assert "Senate vote scheduled" in prompt_content
+    assert "Poll shows 62% support" in prompt_content
+
+
+def test_prompt_graceful_without_ta_data() -> None:
+    """If price history fails, prompt should still work without TA section."""
+    strategy = _make_analyst("0.80")
+    data = MagicMock()
+    data.get_price_history.side_effect = RuntimeError("CLI error")
+
+    signals = strategy.analyze([_make_market("1", yes_price=0.50)], data)
+    assert len(signals) == 1  # Still generates signal from LLM response
+
+    call_args = strategy._client.messages.create.call_args
+    prompt_content: str = call_args[1]["messages"][0]["content"]
+    assert "TECHNICAL ANALYSIS" not in prompt_content
+
+
+def test_prompt_graceful_without_news() -> None:
+    """If no news provider is set, prompt should work without news section."""
+    strategy = _make_analyst("0.80")
+
+    strategy.analyze([_make_market("1", yes_price=0.50)], MagicMock())
+
+    call_args = strategy._client.messages.create.call_args
+    prompt_content: str = call_args[1]["messages"][0]["content"]
+    assert "RECENT NEWS" not in prompt_content
+
+
+def test_prompt_includes_both_ta_and_news() -> None:
+    """When both TA and news are available, prompt includes both sections."""
+    from polymarket_agent.data.models import PricePoint
+    from polymarket_agent.news.models import NewsItem
+
+    strategy = _make_analyst("0.80")
+
+    # Set up TA data
+    data = MagicMock()
+    prices = [PricePoint(timestamp=f"2026-02-{i:02d}T00:00:00Z", price=0.4 + 0.005 * i) for i in range(30)]
+    data.get_price_history.return_value = prices
+
+    # Set up news
+    news_provider = MagicMock()
+    news_provider.search.return_value = [NewsItem(title="Headline", published="2026-02-28")]
+    strategy.set_news_provider(news_provider)
+
+    strategy.analyze([_make_market("1", yes_price=0.50)], data)
+
+    call_args = strategy._client.messages.create.call_args
+    prompt_content: str = call_args[1]["messages"][0]["content"]
+    assert "TECHNICAL ANALYSIS" in prompt_content
+    assert "RECENT NEWS" in prompt_content
+    assert "Headline" in prompt_content
+
+
+def test_prompt_sanitizes_news_titles() -> None:
+    """News titles with control chars should be sanitized before prompt insertion."""
+    from polymarket_agent.news.models import NewsItem
+
+    strategy = _make_analyst("0.80")
+    news_provider = MagicMock()
+    news_provider.search.return_value = [NewsItem(title="Alert\x00\x01: major update", published="2026-02-28")]
+    strategy.set_news_provider(news_provider)
+
+    strategy.analyze([_make_market("1", yes_price=0.50)], MagicMock())
+
+    call_args = strategy._client.messages.create.call_args
+    prompt_content: str = call_args[1]["messages"][0]["content"]
+    assert "\x00" not in prompt_content
+    assert "\x01" not in prompt_content
+
+
+def test_prompt_uses_configured_news_max_results() -> None:
+    """AIAnalyst should honor configured news max-results for prompt enrichment."""
+    from polymarket_agent.news.models import NewsItem
+
+    strategy = _make_analyst("0.80")
+    news_provider = MagicMock()
+    news_provider.search.return_value = [NewsItem(title="Headline", published="2026-02-28")]
+    strategy.set_news_provider(news_provider, max_results=3)
+
+    strategy.analyze([_make_market("1", yes_price=0.50)], MagicMock())
+
+    assert news_provider.search.call_count == 1
+    assert news_provider.search.call_args.kwargs["max_results"] == 3
