@@ -14,6 +14,7 @@ class RiskConfig(BaseModel):
     max_position_size: float = 100.0
     max_daily_loss: float = 50.0
     max_open_orders: int = 10
+    reentry_cooldown_hours: int = 24
 
 
 class AggregationConfig(BaseModel):

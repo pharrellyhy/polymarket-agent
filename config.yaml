@@ -20,11 +20,14 @@ strategies:
   ai_analyst:
     enabled: true
     model: qwen/qwen3.5-35b-a3b
-    max_calls_per_hour: 200
-    min_divergence: 0.01
-    min_price: 0.0
+    max_calls_per_hour: 5000
+    min_divergence: 0.10
+    min_price: 0.05
     order_size: 5.0
     provider: openai
+    extra_params:
+      reasoning_budget: 0    # cap reasoning tokens
+      enable_thinking: false  # or disable entirely
     # base_url: https://api.shubiaobiao.cn/v1
     # api_key_env: OPENAI_API_KEY
     base_url: http://localhost:11567/v1
@@ -43,6 +46,7 @@ risk:
   max_position_size: 200.0
   max_daily_loss: 500.0
   max_open_orders: 10
+  reentry_cooldown_hours: 24
 conditional_orders:
   enabled: true
   default_stop_loss_pct: 0.25
@@ -72,8 +76,8 @@ news:
 focus:
   enabled: true
   search_queries:
-    - "US strikes Iran"
-  max_brackets: 5
+    - "elon-musk-of-tweets-february-27-march-6"
+  max_brackets: 30
 monitoring:
   structured_logging: false
   log_file: null

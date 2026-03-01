@@ -81,6 +81,7 @@ class AIAnalyst(Strategy):
         self._order_size: float = _DEFAULT_ORDER_SIZE
         self._min_price: float = _DEFAULT_MIN_PRICE
         self._news_max_results: int = _DEFAULT_NEWS_MAX_RESULTS
+        self._extra_params: dict[str, Any] = {}
         self._call_timestamps: list[float] = []
         self._client: Any = None
         self._news_provider: NewsProvider | None = None
@@ -138,6 +139,7 @@ class AIAnalyst(Strategy):
         self._order_size = float(config.get("order_size", _DEFAULT_ORDER_SIZE))
         self._min_price = float(config.get("min_price", _DEFAULT_MIN_PRICE))
         self._news_max_results = max(1, int(config.get("news_max_results", self._news_max_results)))
+        self._extra_params = dict(config.get("extra_params", self._extra_params))
 
         raw_provider = config.get("provider", self._provider)
         new_provider = str(raw_provider).strip().lower() if raw_provider is not None else self._provider
@@ -189,25 +191,30 @@ class AIAnalyst(Strategy):
         if self._provider == "anthropic":
             response = self._client.messages.create(
                 model=self._model,
-                max_tokens=32,
+                max_tokens=1024,
                 temperature=0,
                 messages=[{"role": "user", "content": prompt}],
             )
             return str(response.content[0].text).strip()
 
         # OpenAI-compatible provider
-        response = self._client.chat.completions.create(
-            model=self._model,
-            max_tokens=32,
-            temperature=0,
-            messages=[
+        kwargs: dict[str, Any] = {
+            "model": self._model,
+            "max_tokens": 128,
+            "temperature": 0,
+            "messages": [
                 {
                     "role": "system",
                     "content": "Respond with ONLY a single decimal number between 0.0 and 1.0. No other text.",
                 },
                 {"role": "user", "content": prompt},
             ],
-        )
+        }
+
+        if self._extra_params:
+            kwargs["extra_body"] = self._extra_params
+
+        response = self._client.chat.completions.create(**kwargs)
         content = response.choices[0].message.content
         return content.strip() if content else ""
 
@@ -353,11 +360,13 @@ class AIAnalyst(Strategy):
 
         try:
             text = self._call_llm(prompt)
-            match = re.search(r"\b(0(?:\.\d+)?|1(?:\.0+)?)\b", text)
-            if not match:
-                logger.warning("Could not parse probability from AI response: %s", text)
+            # Use findall + take last match: thinking models (e.g. Qwen) emit
+            # reasoning text before the final numeric answer.
+            matches = re.findall(r"\b(0(?:\.\d+)?|1(?:\.0+)?)\b", text)
+            if not matches:
+                logger.warning("Could not parse probability from AI response: %s", text[:200])
                 return None
-            estimate = float(match.group(1))
+            estimate = float(matches[-1])
         except Exception:
             logger.exception("AI analyst call failed for market %s", market.id)
             return None

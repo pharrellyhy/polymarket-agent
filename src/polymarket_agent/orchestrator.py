@@ -81,6 +81,7 @@ class Orchestrator:
         self._last_snapshot_at: datetime | None = None
         self._last_signals: list[Signal] = []
         self._last_signals_updated_at: datetime | None = None
+        self._exited_tokens: dict[str, datetime] = {}  # token_id -> exit time
 
     # ------------------------------------------------------------------
     # Public API
@@ -133,6 +134,7 @@ class Orchestrator:
                 if order is not None:
                     trades_executed += 1
                     self._record_signal(signal, status="executed")
+                    self._exited_tokens[signal.token_id] = datetime.now(timezone.utc)
                     self._alerts.alert(
                         f"Exit trade: {signal.side} {signal.size:.2f} USDC on {signal.market_id} ({signal.reason})"
                     )
@@ -404,6 +406,7 @@ class Orchestrator:
                     self._db.update_conditional_order(order.id, status=OrderStatus.TRIGGERED)
                     if order.token_id not in self._executor.get_portfolio().positions:
                         self._db.cancel_conditional_orders_for_token(order.token_id)
+                    self._exited_tokens[order.token_id] = datetime.now(timezone.utc)
                     triggered += 1
                     logger.info("Triggered %s order %d at bid=%.4f", order.order_type.value, order.id, bid)
             elif order.order_type == OrderType.TRAILING_STOP:
@@ -581,6 +584,14 @@ class Orchestrator:
             positions = self._executor.get_portfolio().positions
             if signal.token_id in positions:
                 return f"already holding position in {signal.token_id[:16]}..."
+
+            # Reject re-entry into recently exited tokens
+            cooldown_hours = risk.reentry_cooldown_hours
+            if cooldown_hours > 0 and signal.token_id in self._exited_tokens:
+                exited_at = self._exited_tokens[signal.token_id]
+                elapsed = (datetime.now(timezone.utc) - exited_at).total_seconds() / 3600
+                if elapsed < cooldown_hours:
+                    return f"reentry blocked: {signal.token_id[:16]}... exited {elapsed:.1f}h ago (cooldown {cooldown_hours}h)"
 
         snapshot = risk_snapshot if risk_snapshot is not None else self._build_risk_snapshot()
         daily_loss = snapshot.daily_loss
