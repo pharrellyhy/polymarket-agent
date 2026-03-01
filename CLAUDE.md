@@ -87,6 +87,7 @@ Main loop: fetch data → run strategies → aggregate signals → execute trade
 - **Docstrings:** Google-style for public APIs
 - Use dataclasses/Pydantic for structured data
 - Use specific exception types, not bare `except:`
+- **All imports at the top of the file** — never import packages inside functions, methods, or conditional blocks; all `import` and `from ... import` statements must appear at the top of the module following PEP 8 import ordering (stdlib → third-party → local)
 
 ## Commit Messages
 
