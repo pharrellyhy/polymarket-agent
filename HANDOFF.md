@@ -1,6 +1,149 @@
 # Polymarket Agent — Handoff Document
 
-Last updated: 2026-02-28
+Last updated: 2026-03-02
+
+---
+
+## Session Entry — 2026-03-02 (Review Follow-Up: External Price Parsing + Whale Dedup State)
+
+### Problem
+- Review of the newly added strategy/data modules found two correctness risks:
+- `WhaleFollower` consumed dedup state before confirming the traded market was currently active, which could suppress valid future signals.
+- External price clients (`KalshiClient`, `MetaculusClient`) could raise on malformed numeric fields (`yes_ask`, `q2`) and drop otherwise valid rows in the same payload.
+
+### Solution
+- Added regression tests first (red) to lock expected behavior for:
+- Whale dedup state only after market validation.
+- Graceful skip of malformed external-price rows while preserving valid rows.
+- Updated `WhaleFollower` signal generation order so dedup keys are added only after active-market checks pass.
+- Simplified external client parsing with a shared probability coercion helper and defensive dict/list checks.
+- Replaced cache return `type: ignore` patterns with explicit runtime list checks and fixed mypy-typed string/side normalization.
+
+### Edits
+- `src/polymarket_agent/strategies/whale_follower.py`
+  - Moved dedup key check/set to occur after market/token validation.
+  - Added explicit `Literal["buy", "sell"]` side normalization for type safety.
+- `src/polymarket_agent/data/external_prices.py`
+  - Added `_coerce_probability()` helper for robust probability parsing/clamping.
+  - Hardened Kalshi/Metaculus row parsing with defensive type checks and invalid-row skipping.
+  - Removed `type: ignore[return-value]` cache returns by using explicit list checks.
+- `tests/test_whale_follower.py`
+  - Added `test_whale_follower_does_not_dedup_before_market_match`.
+- `tests/test_external_prices.py` (**NEW**)
+  - Added parsing resilience tests for invalid Kalshi `yes_ask` and invalid Metaculus `q2`.
+
+### NOT Changed
+- No strategy scoring math changes (confidence/divergence formulas unchanged).
+- No execution layer, DB schema, or orchestrator flow changes.
+- No config shape/default changes.
+
+### Verification
+```bash
+uv run pytest tests/test_whale_follower.py::test_whale_follower_does_not_dedup_before_market_match tests/test_external_prices.py -q
+# RED first: 3 failed (expected), then GREEN: 3 passed
+
+uv run pytest tests/test_whale_follower.py tests/test_cross_platform_arb.py tests/test_external_prices.py -q
+# 17 passed
+
+uv run ruff check src/polymarket_agent/data/external_prices.py src/polymarket_agent/strategies/whale_follower.py tests/test_external_prices.py tests/test_whale_follower.py
+# All checks passed
+
+uv run mypy src/polymarket_agent/data/external_prices.py src/polymarket_agent/strategies/whale_follower.py
+# Success: no issues found in 2 source files
+```
+
+### Branch
+- Working branch: `main`
+
+---
+
+## Session Entry — 2026-03-02 (Strategy Enhancement: 4 New Trading Capabilities)
+
+### Problem
+- The agent lacked whale/smart money tracking, cross-platform arbitrage, volatility anomaly detection, and news sentiment analysis — all key capabilities identified from the Polymarket ecosystem.
+
+### Solution
+- **WhaleFollower strategy (standalone):** Queries leaderboard for top traders, fetches their recent activity via new `GammaClient`, emits follow signals for large trades. Confidence inversely proportional to rank. Deduplicates trader/market pairs.
+- **CrossPlatformArb strategy (standalone):** Fetches prices from Kalshi and Metaculus via new `KalshiClient`/`MetaculusClient`, fuzzy-matches questions to Polymarket markets using `difflib.SequenceMatcher`, signals when divergence exceeds combined fee threshold.
+- **Volatility anomaly detection (AIAnalyst enrichment):** New `volatility.py` module computes composite anomaly score from rate of change, acceleration, volume spike, BB width percentile, and spread widening. Injected as `--- VOLATILITY ANALYSIS ---` prompt section.
+- **News sentiment + keyword spikes (AIAnalyst enrichment):** New `news/sentiment.py` with LLM-based sentiment scoring and `KeywordTracker` for Google RSS frequency tracking. Both inject prompt sections (`--- SENTIMENT ANALYSIS ---`, `--- KEYWORD SPIKES ---`). Toggleable via config.
+- **GammaClient extraction:** Refactored orchestrator's inline Gamma API urllib code into a proper `GammaClient` class with TTL caching.
+- **DataProvider protocol extended:** Added `get_leaderboard()` to support WhaleFollower.
+
+### Edits
+- `src/polymarket_agent/data/models.py` — added 5 Pydantic models: `WhaleTrade`, `CrossPlatformPrice`, `VolatilityReport`, `SentimentScore`, `KeywordSpike`
+- `src/polymarket_agent/data/gamma_client.py` — **NEW** Gamma API client with TTL caching
+- `src/polymarket_agent/data/external_prices.py` — **NEW** Kalshi + Metaculus API clients
+- `src/polymarket_agent/data/provider.py` — extended `DataProvider` protocol with `get_leaderboard()`
+- `src/polymarket_agent/strategies/volatility.py` — **NEW** volatility anomaly computation module
+- `src/polymarket_agent/news/sentiment.py` — **NEW** sentiment scoring + keyword spike tracking
+- `src/polymarket_agent/strategies/whale_follower.py` — **NEW** WhaleFollower standalone strategy
+- `src/polymarket_agent/strategies/cross_platform_arb.py` — **NEW** CrossPlatformArb standalone strategy
+- `src/polymarket_agent/strategies/ai_analyst.py` — integrated volatility report, sentiment scoring, keyword spike detection; added enrichment config flags
+- `src/polymarket_agent/orchestrator.py` — registered WhaleFollower + CrossPlatformArb in `STRATEGY_REGISTRY`; refactored `_fetch_focus_markets_from_api()` to use `GammaClient`
+- `config.yaml` — added `whale_follower` and `cross_platform_arb` strategy configs (disabled by default); added `volatility_enabled`, `sentiment_enabled`, `keyword_spike_enabled` toggles to `ai_analyst`
+- `tests/test_volatility.py` — **NEW** 15 tests
+- `tests/test_sentiment.py` — **NEW** 12 tests
+- `tests/test_whale_follower.py` — **NEW** 6 tests
+- `tests/test_cross_platform_arb.py` — **NEW** 8 tests
+
+### NOT Changed
+- No changes to existing strategy logic (SignalTrader, MarketMaker, Arbitrageur, TechnicalAnalyst)
+- No changes to execution layer, MCP server, or dashboard
+- No DB schema changes
+- All 395 existing tests pass unchanged
+
+### Verification
+```bash
+uv run pytest tests/ -v                    # 436 passed (41 new)
+ruff check src/ tests/                     # All checks passed
+ruff format --check src/ tests/            # All formatted
+python3 -c "from polymarket_agent.orchestrator import STRATEGY_REGISTRY; print(list(STRATEGY_REGISTRY.keys()))"
+# ['signal_trader', 'market_maker', 'arbitrageur', 'ai_analyst', 'technical_analyst', 'whale_follower', 'cross_platform_arb']
+```
+
+### Branch
+- Working branch: `main`
+
+---
+
+## Session Entry — 2026-03-01 (Reentry Cooldown, Min Divergence, Thinking Model Support)
+
+### Problem
+- The AI analyst (using local Qwen3.5-35b-a3b via OpenAI-compatible API) was churning positions: exiting losers then immediately re-entering the same tokens, crystallizing losses repeatedly.
+- `min_divergence: 0.01` was far too aggressive — the model traded on 1% disagreements with the market, generating noisy signals.
+- The Qwen thinking model returned reasoning text before the final probability number, which the regex parser picked up as the first match (wrong number). Also `max_tokens` was too low for thinking output.
+- No way to pass framework-specific parameters (e.g. `thinking_budget`, `enable_thinking`) to the OpenAI-compatible endpoint.
+
+### Solution
+- **Reentry cooldown:** Added `reentry_cooldown_hours` (default 24) to `RiskConfig`. Orchestrator tracks exited token IDs with timestamps in `_exited_tokens` dict. `_check_risk()` rejects buy signals for tokens exited within the cooldown window. Exits recorded from both ExitManager sells and conditional order triggers.
+- **Raised min_divergence:** Changed from 0.01 to 0.10 in config — model only trades when its estimate diverges 10%+ from the market price.
+- **Thinking model response parsing:** Changed `re.search()` (first match) to `re.findall()` + `matches[-1]` (last match) so thinking model reasoning text doesn't pollute the probability extraction. Truncated warning log to `text[:200]`.
+- **Extra params passthrough:** Added `_extra_params` dict to AIAnalyst, loaded from `extra_params` config key, passed as `extra_body` to the OpenAI SDK. Allows setting `thinking_budget`, `enable_thinking`, etc.
+- **Removed debug print:** Cleaned up leftover `print(content)` in the OpenAI response path.
+
+### Edits
+- `src/polymarket_agent/config.py` — added `reentry_cooldown_hours: int = 24` to `RiskConfig`
+- `src/polymarket_agent/orchestrator.py` — added `_exited_tokens` tracking dict; record exits in exit manager execution and conditional order trigger paths; added reentry cooldown check in `_check_risk()`
+- `src/polymarket_agent/strategies/ai_analyst.py` — added `_extra_params` field + `extra_body` passthrough; changed response parsing to use last regex match; removed debug `print`
+- `config.yaml` — `min_divergence` 0.01→0.10; added `reentry_cooldown_hours: 24`; added `extra_params` block
+
+### NOT Changed
+- No changes to strategy logic, exit manager rules, or signal aggregation.
+- No changes to DB schema, MCP server, or dashboard.
+- No changes to Anthropic provider path (only OpenAI-compatible path affected).
+
+### Verification
+```bash
+uv run pytest tests/ -v                     # 395 passed
+# Live paper trading run confirmed:
+# - Old settings (8h): -$32.90 (-7.3%), constant churn and re-entries
+# - New settings (2.5h): -$5.74 (-1.4%), clean exits only, 0 re-entries
+# - Positions reduced from 15 to 5 via disciplined exits, no new entries
+```
+
+### Branch
+- Working branch: `main`
 
 ---
 
@@ -324,88 +467,13 @@ uv run mypy src/                             # Only pre-existing dashboard error
 
 ---
 
-## Session Entry — 2026-02-27 (Review Follow-Up: Conditional Order Sibling Cleanup)
-
-### Problem
-- Reviewed the newest runtime-fix additions and found a cleanup gap in conditional order execution.
-- When one conditional order triggered and fully closed a position, sibling conditional orders for the same token could remain active.
-- Those leftover siblings had no valid position to protect and could become stale noise later.
-
-### Solution
-- **TDD regression first:** Added a failing orchestrator test that reproduces the sibling-order leftover case.
-- **Minimal orchestrator fix:** After a conditional order executes, `_check_conditional_orders()` now checks whether the position is still held; if not, it cancels remaining active conditional orders for that token via `cancel_conditional_orders_for_token()`.
-- **Small test cleanup:** Removed one pre-existing unused local variable flagged by `ruff`.
-
-### Edits
-- `src/polymarket_agent/orchestrator.py` — cancel sibling active conditional orders when a triggered conditional sell closes the position
-- `tests/test_orders.py` — added `test_triggered_order_cancels_sibling_orders_when_position_closes`; removed unused `order_id` local in trailing-stop test
-- `HANDOFF.md` — added this review follow-up entry; removed oldest session entry to keep last 10 entries
-
-### NOT Changed
-- No changes to conditional-order trigger thresholds, order types, or DB schema.
-- No changes to strategy generation, position sizing, or paper-trader fill math.
-
-### Verification
-```bash
-uv run python -m pytest tests/test_orders.py::TestConditionalOrderChecking::test_triggered_order_cancels_sibling_orders_when_position_closes -q   # failed first, then passed after fix
-uv run python -m pytest tests/test_orders.py -q                                                                                                    # 16 passed
-ruff check src/polymarket_agent/orchestrator.py tests/test_orders.py                                                                               # All checks passed
-./.venv/bin/mypy src/polymarket_agent/orchestrator.py                                                                                              # Success: no issues found in 1 source file
-```
-
-### Branch
-- Working branch: `main`
-
----
-
-## Session Entry — 2026-02-28 (Runtime Fixes: .env Loading, AI Analyst, Zero-Price Writeoff, Stale Orders)
-
-### Problem
-- `OPENAI_API_KEY` was configured in `.env` but never loaded — `os.environ.get()` couldn't see it.
-- AI analyst returned empty responses from the OpenAI proxy, causing "Could not parse probability" warnings every tick.
-- Positions that hit zero price caused an infinite loop: ExitManager generated a sell signal, paper trader rejected it (price ≤ 0), position stayed open, repeat every tick.
-- Conditional orders (stop-loss/take-profit) for closed positions spammed "No position to sell" warnings every tick because they were never cancelled.
-
-### Solution
-- **python-dotenv integration:** Added `python-dotenv>=1.0` dependency. `load_config()` now calls `load_dotenv()` before parsing YAML, making `.env` vars available to all code paths.
-- **AI analyst LLM hardening:** Added `temperature=0` for deterministic output, bumped `max_tokens` 10→16, added system message for OpenAI path, handled `None` content from API.
-- **Zero-price writeoff:** Split `<= 0` guard into `< 0` (reject as invalid) and `== 0` (write off position). Writeoff removes position, logs cost basis for PnL traceability, and returns an Order so downstream cleanup runs.
-- **Stale conditional order cleanup:** Added `cancel_conditional_orders_for_token()` DB method. Orchestrator now: (1) cancels stale orders before attempting execution if position is gone, (2) cancels all related orders after an exit trade executes.
-- **Code simplification:** Used `dataclasses.replace()` instead of manual Signal reconstruction in paper trader sell path.
-
-### Edits
-- `pyproject.toml` — added `python-dotenv>=1.0` dependency
-- `uv.lock` — updated lockfile
-- `src/polymarket_agent/config.py` — imported `load_dotenv`, call it in `load_config()`
-- `src/polymarket_agent/strategies/ai_analyst.py` — `temperature=0`, `max_tokens=16`, system message, `None` content handling in `_call_llm()`
-- `src/polymarket_agent/execution/paper.py` — zero-price writeoff with cost basis, negative price rejection, `dataclasses.replace()` simplification
-- `src/polymarket_agent/db.py` — added `cancel_conditional_orders_for_token()` method
-- `src/polymarket_agent/orchestrator.py` — stale order cancellation in `_check_conditional_orders()`, order cleanup after exit trades
-- `tests/test_paper_trader.py` — added `test_paper_trader_sell_writeoff_at_zero_price` and `test_paper_trader_sell_negative_price_rejected`
-
-### NOT Changed
-- No changes to strategy logic, exit rules, or signal aggregation.
-- No changes to MCP server, dashboard, or live trader.
-- No DB schema changes (only new query method).
-
-### Verification
-```bash
-uv run pytest tests/ -v              # 337 passed
-uv run ruff check src/               # All checks passed
-```
-
-### Branch
-- Working branch: `main`
-
----
-
 ## Project Summary
 
 **Polymarket Agent** is a Python auto-trading pipeline for Polymarket prediction markets. It wraps the official `polymarket` CLI (v0.1.4, installed via Homebrew) into a structured system with pluggable trading strategies, paper/live execution, and MCP server integration for AI agents.
 
 ## Current State: Phase 4 COMPLETE
 
-- 393 tests passing, ruff lint clean, mypy strict clean
+- 395 tests passing, ruff lint clean, mypy strict clean
 - All 4 strategies implemented: SignalTrader, MarketMaker, Arbitrageur, AIAnalyst
 - Signal aggregation integrated (groups by market+token+side, unique strategy consensus)
 - MCP server with 14 tools: search_markets, get_market_detail, get_price_history, get_leaderboard, get_portfolio, get_signals, refresh_signals, place_trade, analyze_market, get_event, get_price, get_spread, get_volume, get_positions

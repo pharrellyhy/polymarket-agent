@@ -9,13 +9,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
-    from polymarket_agent.data.models import Market, OrderBook, PricePoint, Spread
+    from polymarket_agent.data.models import Market, OrderBook, PricePoint, Spread, Trader
 
 
 class DataProvider(Protocol):
     """Structural protocol for market data providers.
 
-    Any class that implements these four methods can be used by the
+    Any class that implements these methods can be used by the
     orchestrator and strategy engine without modification.
     """
 
@@ -32,3 +32,5 @@ class DataProvider(Protocol):
         interval: str = "1d",
         fidelity: int = 60,
     ) -> list[PricePoint]: ...
+
+    def get_leaderboard(self, *, period: str = "month") -> list[Trader]: ...

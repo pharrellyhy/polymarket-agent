@@ -31,6 +31,9 @@ strategies:
     # base_url: https://api.shubiaobiao.cn/v1
     # api_key_env: OPENAI_API_KEY
     base_url: http://localhost:11567/v1
+    volatility_enabled: true
+    sentiment_enabled: false
+    keyword_spike_enabled: false
   technical_analyst:
     enabled: true
     ema_fast_period: 8
@@ -39,6 +42,22 @@ strategies:
     history_interval: "1w"
     history_fidelity: 60
     order_size: 25.0
+  whale_follower:
+    enabled: false
+    top_n: 10
+    min_trade_size: 500.0
+    order_size: 25.0
+    leaderboard_period: month
+    gamma_cache_ttl: 120.0
+  cross_platform_arb:
+    enabled: false
+    min_divergence: 0.05
+    similarity_threshold: 0.55
+    order_size: 25.0
+    polymarket_fee: 0.02
+    external_fee: 0.03
+    kalshi_cache_ttl: 300.0
+    metaculus_cache_ttl: 600.0
 aggregation:
   min_confidence: 0.01
   min_strategies: 1

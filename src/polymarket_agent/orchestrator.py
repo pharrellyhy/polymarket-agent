@@ -9,6 +9,7 @@ from typing import Any
 
 from polymarket_agent.config import AppConfig
 from polymarket_agent.data.client import PolymarketData
+from polymarket_agent.data.gamma_client import GammaClient
 from polymarket_agent.data.models import Market
 from polymarket_agent.data.provider import DataProvider
 from polymarket_agent.db import Database
@@ -25,10 +26,12 @@ from polymarket_agent.strategies.aggregator import aggregate_signals
 from polymarket_agent.strategies.ai_analyst import AIAnalyst
 from polymarket_agent.strategies.arbitrageur import Arbitrageur
 from polymarket_agent.strategies.base import Signal, Strategy
+from polymarket_agent.strategies.cross_platform_arb import CrossPlatformArb
 from polymarket_agent.strategies.exit_manager import ExitManager
 from polymarket_agent.strategies.market_maker import MarketMaker
 from polymarket_agent.strategies.signal_trader import SignalTrader
 from polymarket_agent.strategies.technical_analyst import TechnicalAnalyst
+from polymarket_agent.strategies.whale_follower import WhaleFollower
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +41,8 @@ STRATEGY_REGISTRY: dict[str, type[Strategy]] = {
     "arbitrageur": Arbitrageur,
     "ai_analyst": AIAnalyst,
     "technical_analyst": TechnicalAnalyst,
+    "whale_follower": WhaleFollower,
+    "cross_platform_arb": CrossPlatformArb,
 }
 
 
@@ -326,21 +331,15 @@ class Orchestrator:
         market-text matching via the Gamma API.
         """
         import re
-        import urllib.request
 
+        gamma = GammaClient(cache_ttl=60.0)
         all_markets: dict[str, Market] = {}
-        headers = {"User-Agent": "polymarket-agent/1.0"}
 
         for query in queries:
-            # Try event slug lookup first (e.g. "US strikes Iran" -> "us-strikes-iran")
             slug = re.sub(r"[^a-z0-9]+", "-", query.lower()).strip("-")
-            # Append common suffixes for bracket events
             for slug_variant in [slug, f"{slug}-by", f"{slug}-in"]:
-                url = f"https://gamma-api.polymarket.com/events?slug={slug_variant}"
                 try:
-                    req = urllib.request.Request(url, headers=headers)
-                    with urllib.request.urlopen(req, timeout=15) as resp:  # noqa: S310
-                        events = json.loads(resp.read().decode())
+                    events = gamma.search_events(slug_variant)
                     for event in events:
                         for item in event.get("markets", []):
                             try:

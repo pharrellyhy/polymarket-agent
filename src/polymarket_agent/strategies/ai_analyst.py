@@ -4,8 +4,8 @@ Supports both Anthropic and OpenAI-compatible providers. Set ``provider``
 to ``"openai"`` in the strategy config (or via ``configure()``) to use any
 OpenAI-compatible endpoint, including local models served via Ollama/vLLM.
 
-The prompt is enriched with optional technical analysis (from price history)
-and recent news headlines when available.
+The prompt is enriched with optional technical analysis (from price history),
+recent news headlines, volatility anomaly detection, and sentiment analysis.
 """
 
 from __future__ import annotations
@@ -16,11 +16,19 @@ import re
 import time
 from typing import TYPE_CHECKING, Any, Literal
 
-from polymarket_agent.data.models import Market
+from polymarket_agent.data.models import Market, VolatilityReport
+from polymarket_agent.news.sentiment import (
+    KeywordTracker,
+    format_keyword_spikes,
+    format_sentiment_summary,
+    score_sentiment,
+)
 from polymarket_agent.strategies.base import Signal, Strategy
 from polymarket_agent.strategies.indicators import TechnicalContext, analyze_market_technicals
+from polymarket_agent.strategies.volatility import compute_volatility_report, format_volatility_summary
 
 if TYPE_CHECKING:
+    from polymarket_agent.data.models import KeywordSpike, SentimentScore
     from polymarket_agent.data.provider import DataProvider
     from polymarket_agent.news.models import NewsItem
     from polymarket_agent.news.provider import NewsProvider
@@ -85,6 +93,10 @@ class AIAnalyst(Strategy):
         self._call_timestamps: list[float] = []
         self._client: Any = None
         self._news_provider: NewsProvider | None = None
+        self._sentiment_enabled: bool = False
+        self._keyword_spike_enabled: bool = False
+        self._volatility_enabled: bool = True
+        self._keyword_tracker: KeywordTracker = KeywordTracker()
         self._init_client()
 
     def _resolved_api_key_env(self) -> str:
@@ -140,6 +152,9 @@ class AIAnalyst(Strategy):
         self._min_price = float(config.get("min_price", _DEFAULT_MIN_PRICE))
         self._news_max_results = max(1, int(config.get("news_max_results", self._news_max_results)))
         self._extra_params = dict(config.get("extra_params", self._extra_params))
+        self._sentiment_enabled = bool(config.get("sentiment_enabled", self._sentiment_enabled))
+        self._keyword_spike_enabled = bool(config.get("keyword_spike_enabled", self._keyword_spike_enabled))
+        self._volatility_enabled = bool(config.get("volatility_enabled", self._volatility_enabled))
 
         raw_provider = config.get("provider", self._provider)
         new_provider = str(raw_provider).strip().lower() if raw_provider is not None else self._provider
@@ -270,6 +285,46 @@ class AIAnalyst(Strategy):
         return "\n".join(lines)
 
     # ------------------------------------------------------------------
+    # Volatility analysis context
+    # ------------------------------------------------------------------
+
+    def _fetch_volatility_report(self, token_id: str, data: DataProvider) -> VolatilityReport | None:
+        """Best-effort fetch of volatility analysis for a token."""
+        if not self._volatility_enabled:
+            return None
+        try:
+            history = data.get_price_history(token_id, interval="1w", fidelity=60)
+            return compute_volatility_report(history, token_id)
+        except Exception:
+            logger.debug("Failed to fetch volatility report for %s", token_id)
+            return None
+
+    # ------------------------------------------------------------------
+    # Sentiment analysis context
+    # ------------------------------------------------------------------
+
+    def _score_news_sentiment(self, news_items: list[NewsItem], market_id: str) -> SentimentScore | None:
+        """Score sentiment of news headlines using the configured LLM."""
+        if not self._sentiment_enabled or not news_items or self._client is None:
+            return None
+        try:
+            return score_sentiment(news_items, market_id, self._call_llm)
+        except Exception:
+            logger.debug("Failed to score sentiment for market %s", market_id)
+            return None
+
+    def _detect_keyword_spikes(self, question: str) -> list[KeywordSpike]:
+        """Detect keyword spikes related to the market question."""
+        if not self._keyword_spike_enabled:
+            return []
+        # Extract key terms from the question (words > 4 chars, skip common words)
+        stop_words = {"will", "what", "when", "where", "which", "would", "could", "should", "about", "their", "there"}
+        keywords = [w.lower() for w in question.split() if len(w) > 4 and w.lower() not in stop_words][:3]
+        for keyword in keywords:
+            self._keyword_tracker.fetch_and_record(keyword)
+        return self._keyword_tracker.detect_spikes(keywords)
+
+    # ------------------------------------------------------------------
     # Evaluation
     # ------------------------------------------------------------------
 
@@ -347,10 +402,26 @@ class AIAnalyst(Strategy):
         if ta_ctx is not None:
             prompt += f"\n--- TECHNICAL ANALYSIS ---\n{self._format_technical_summary(ta_ctx)}\n"
 
+        # Volatility analysis section (optional)
+        vol_report = self._fetch_volatility_report(token_id, data)
+        if vol_report is not None:
+            prompt += f"\n--- VOLATILITY ANALYSIS ---\n{format_volatility_summary(vol_report)}\n"
+
         # News section (optional)
         news_items = self._fetch_news(market.question)
         if news_items:
             prompt += f"\n--- RECENT NEWS ---\n{self._format_news_summary(news_items)}\n"
+
+        # Sentiment analysis section (optional)
+        if news_items:
+            sentiment = self._score_news_sentiment(news_items, market.id)
+            if sentiment is not None:
+                prompt += f"\n--- SENTIMENT ANALYSIS ---\n{format_sentiment_summary(sentiment)}\n"
+
+        # Keyword spike section (optional)
+        keyword_spikes = self._detect_keyword_spikes(market.question)
+        if keyword_spikes:
+            prompt += f"\n--- KEYWORD SPIKES ---\n{format_keyword_spikes(keyword_spikes)}\n"
 
         prompt += (
             "--- END MARKET DATA ---\n"

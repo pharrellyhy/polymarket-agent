@@ -287,3 +287,65 @@ class OrderBook(BaseModel):
         if not self.asks or not self.bids:
             return 0.0
         return self.best_ask - self.best_bid
+
+
+# ---------------------------------------------------------------------------
+# Strategy enhancement models
+# ---------------------------------------------------------------------------
+
+
+class WhaleTrade(BaseModel):
+    """A significant trade by a top-ranked trader."""
+
+    trader_name: str
+    trader_address: str = ""
+    rank: int
+    market_id: str
+    token_id: str = ""
+    side: str  # "buy" or "sell"
+    size: float  # USDC
+    price: float = 0.0
+    timestamp: str = ""
+
+
+class CrossPlatformPrice(BaseModel):
+    """A price observation from an external prediction market."""
+
+    platform: str  # "kalshi", "metaculus"
+    question: str
+    probability: float  # 0-1
+    url: str = ""
+    last_updated: str = ""
+
+
+class VolatilityReport(BaseModel):
+    """Aggregated volatility metrics for a single token."""
+
+    token_id: str
+    rate_of_change: float = 0.0
+    price_acceleration: float = 0.0
+    volume_spike_ratio: float = 0.0
+    bb_width_percentile: float = 0.0
+    spread_widening: float = 0.0
+    anomaly_score: float = 0.0  # 0-1 composite
+    is_anomalous: bool = False
+
+
+class SentimentScore(BaseModel):
+    """LLM-derived sentiment for a market from news headlines."""
+
+    market_id: str
+    sentiment: str  # "bullish", "bearish", "neutral"
+    score: float  # -1 to 1
+    summary: str = ""
+    headline_count: int = 0
+
+
+class KeywordSpike(BaseModel):
+    """A detected spike in keyword mention frequency."""
+
+    keyword: str
+    current_count: int
+    baseline_avg: float
+    spike_ratio: float  # current / baseline
+    window_hours: int
