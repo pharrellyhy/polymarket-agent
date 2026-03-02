@@ -6,6 +6,7 @@ This file provides guidance to Claude Code when working with the Polymarket Agen
 
 - **DO NOT** mention Claude as code generator or code co-author in commits, comments, or docs
 - **Plan before you code** — before starting any implementation work, write a design plan or implementation plan in `docs/plans/` first. No code changes until a plan document exists and covers the approach
+- **Do not auto-commit or push** — never automatically commit or push after finishing a feature or task; only commit/push when explicitly asked
 
 ## Project Overview
 
