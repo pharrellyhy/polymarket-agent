@@ -11,6 +11,10 @@ Agent-friendly auto-trading pipeline for Polymarket prediction markets.
 - **Pluggable strategy engine** — SignalTrader, MarketMaker, Arbitrageur, TechnicalAnalyst, and AIAnalyst (Anthropic/OpenAI) modules
 - **Technical analysis** — EMA crossover, RSI/Stochastic RSI, Bollinger Band squeeze detection from price history
 - **News intelligence** — Google News RSS (free) or Tavily search for real-world context, with TTL caching and rate limiting
+- **Whale tracking** — follow top leaderboard traders' moves via Gamma API with rank-based confidence scaling
+- **Cross-platform arbitrage** — fuzzy-match Kalshi and Metaculus markets to Polymarket, trade on fee-adjusted price divergence
+- **Volatility anomaly detection** — composite anomaly scoring (rate-of-change, acceleration, volume spikes, Bollinger width) enriches AIAnalyst prompt
+- **Sentiment analysis** — LLM-scored news sentiment and Google RSS keyword spike detection enrich AIAnalyst prompt
 - **Paper trading** — simulated order fills against real order-book data, logged to SQLite
 - **Live trading** — real order placement via py-clob-client with private key signing
 - **MCP server** — 22 tools for AI agent integration (market data, trading, signals, conditional orders, backtesting, monitoring)
@@ -31,7 +35,9 @@ flowchart LR
     CLI["polymarket CLI<br/>(Homebrew)"]
     Data["PolymarketData<br/>+ TTLCache"]
     News["News Provider<br/>(Google RSS / Tavily)"]
-    Strat["Strategy Engine<br/>(Multiple Strategies)"]
+    Gamma["Gamma API<br/>(whale trades)"]
+    ExtPrices["External Prices<br/>(Kalshi / Metaculus)"]
+    Strat["Strategy Engine<br/>(7 Strategies)"]
     Exec["Executor<br/>(PaperTrader)"]
     DB[(SQLite)]
     Orch["Orchestrator"]
@@ -45,13 +51,15 @@ flowchart LR
     Orch --> Exec
     Data --> Strat
     News -->|Headlines| Strat
+    Gamma -->|Whale trades| Strat
+    ExtPrices -->|Prices| Strat
     Strat -->|Signals| Exec
     Exec --> DB
     Config -->|hot-reload| Orch
     Tune -->|evaluate + edit| Config
 ```
 
-The **Orchestrator** drives a fetch → analyze → execute cycle each tick, hot-reloading `config.yaml` when it detects changes. The **Data Layer** shells out to the `polymarket` CLI with `-o json` and parses responses into Pydantic models. **Strategies** consume market data and emit `Signal` objects — the TechnicalAnalyst uses price history for indicator-based signals, while the AIAnalyst enriches its LLM prompt with both technical analysis and recent news headlines. The **News Provider** fetches headlines via Google News RSS (free) or Tavily, with caching and rate limiting. The **Executor** fills orders (paper or live) and persists trades to SQLite. The **Auto-Tune** loop periodically evaluates performance and uses an LLM (Anthropic, OpenAI, or local endpoints) to adjust strategy parameters.
+The **Orchestrator** drives a fetch → analyze → execute cycle each tick, hot-reloading `config.yaml` when it detects changes. The **Data Layer** shells out to the `polymarket` CLI with `-o json` and parses responses into Pydantic models. **Strategies** consume market data and emit `Signal` objects — the TechnicalAnalyst uses price history for indicator-based signals, the WhaleFollower tracks top traders via the **Gamma API**, and the CrossPlatformArb detects fee-adjusted price divergences between Polymarket and **Kalshi/Metaculus**. The AIAnalyst enriches its LLM prompt with technical analysis, news headlines, volatility anomaly scores, and sentiment analysis. The **News Provider** fetches headlines via Google News RSS (free) or Tavily, with caching and rate limiting. The **Executor** fills orders (paper or live) and persists trades to SQLite. The **Auto-Tune** loop periodically evaluates performance and uses an LLM (Anthropic, OpenAI, or local endpoints) to adjust strategy parameters.
 
 ## Quick Start
 
@@ -118,7 +126,7 @@ Orders are placed as GTC (Good-Til-Cancelled) limit orders on the CLOB. If you u
 
 ### Strategies
 
-Five pluggable strategies are available, each enabled independently in `config.yaml`:
+Seven pluggable strategies are available, each enabled independently in `config.yaml`:
 
 **SignalTrader** — directional signals based on volume and price deviation from 0.50.
 
@@ -193,8 +201,43 @@ Sends each market's question and description to the configured LLM provider, par
 
 - **Technical analysis** — price trend, EMA crossover direction, RSI reading, and volatility state (computed from price history)
 - **Recent news** — up to 5 headlines relevant to the market question (fetched via the configured news provider)
+- **Volatility analysis** — composite anomaly score from rate-of-change, acceleration, volume spikes, and Bollinger Band width percentile (`volatility_enabled: true`)
+- **Sentiment analysis** — LLM-scored news headline sentiment: bullish, bearish, or neutral with a -1 to 1 score (`sentiment_enabled: true`)
+- **Keyword spikes** — Google RSS frequency tracking across 1h/6h/24h windows, flagged when mentions exceed 3x baseline (`keyword_spike_enabled: true`)
 
-Both sections are optional — the strategy gracefully degrades if price history or news is unavailable. Supports both Anthropic (default) and OpenAI-compatible providers, including local models served via Ollama or vLLM. Requires the appropriate API key (`ANTHROPIC_API_KEY` or `OPENAI_API_KEY`). Gracefully disabled when the key is not set.
+All sections are optional — the strategy gracefully degrades if any data source is unavailable. Supports both Anthropic (default) and OpenAI-compatible providers, including local models served via Ollama or vLLM. Requires the appropriate API key (`ANTHROPIC_API_KEY` or `OPENAI_API_KEY`). Gracefully disabled when the key is not set.
+
+**WhaleFollower** — follows top-ranked Polymarket traders' moves via the Gamma API.
+
+```yaml
+strategies:
+  whale_follower:
+    enabled: false
+    top_n: 10              # track top N leaderboard traders
+    min_trade_size: 500.0  # ignore trades below this USDC amount
+    order_size: 25.0       # USDC per follow trade
+    leaderboard_period: month
+    gamma_cache_ttl: 120.0 # cache Gamma API responses (seconds)
+```
+
+Queries the leaderboard for top traders, then fetches each trader's recent activity from the Gamma Markets API. When a top trader makes a trade above `min_trade_size`, emits a follow signal in the same direction. Confidence is inversely proportional to rank (rank 1 = 1.0, rank 10 = 0.55), and position size scales with confidence. Deduplicates by trader/market pair to avoid repeated signals.
+
+**CrossPlatformArb** — detects price divergences between Polymarket and external prediction markets.
+
+```yaml
+strategies:
+  cross_platform_arb:
+    enabled: false
+    min_divergence: 0.05       # minimum price gap to signal
+    similarity_threshold: 0.55 # fuzzy-match threshold for question matching
+    order_size: 25.0           # USDC per trade
+    polymarket_fee: 0.02       # Polymarket trading fee
+    external_fee: 0.03         # external platform fee estimate
+    kalshi_cache_ttl: 300.0    # cache Kalshi prices (seconds)
+    metaculus_cache_ttl: 600.0 # cache Metaculus prices (seconds)
+```
+
+Fetches active markets from Kalshi and Metaculus, then fuzzy-matches their questions to Polymarket questions using `difflib.SequenceMatcher`. When the price divergence exceeds `min_divergence + polymarket_fee + external_fee`, emits a signal: buy when the external price is higher (Yes underpriced on Polymarket), sell when lower. Confidence scales with divergence magnitude.
 
 **Signal Aggregation** — all strategy signals pass through an aggregation step before execution:
 
@@ -569,6 +612,9 @@ strategies:
     # provider: anthropic       # anthropic (default) or openai
     # base_url: null             # for local/custom OpenAI-compatible endpoints
     # api_key_env: null          # override env var name for API key
+    volatility_enabled: true     # inject volatility anomaly analysis into prompt
+    sentiment_enabled: false     # inject LLM-scored news sentiment into prompt
+    keyword_spike_enabled: false # inject Google RSS keyword spike detection into prompt
   technical_analyst:
     enabled: true
     ema_fast_period: 8
@@ -577,6 +623,22 @@ strategies:
     history_interval: "1w"
     history_fidelity: 60
     order_size: 25.0
+  whale_follower:
+    enabled: false
+    top_n: 10
+    min_trade_size: 500.0
+    order_size: 25.0
+    leaderboard_period: month
+    gamma_cache_ttl: 120.0
+  cross_platform_arb:
+    enabled: false
+    min_divergence: 0.05
+    similarity_threshold: 0.55
+    order_size: 25.0
+    polymarket_fee: 0.02
+    external_fee: 0.03
+    kalshi_cache_ttl: 300.0
+    metaculus_cache_ttl: 600.0
 
 aggregation:
   min_confidence: 0.3
@@ -638,22 +700,28 @@ src/polymarket_agent/
 ├── mcp_server.py           # MCP server (22 tools)
 ├── data/
 │   ├── client.py           # CLI wrapper (subprocess + JSON parsing)
-│   ├── models.py           # Pydantic models (Market, Event, OrderBook, …)
+│   ├── models.py           # Pydantic models (Market, Event, OrderBook, WhaleTrade, …)
 │   ├── provider.py         # DataProvider protocol
-│   └── cache.py            # In-memory TTL cache
+│   ├── cache.py            # In-memory TTL cache
+│   ├── gamma_client.py     # Gamma Markets API client (whale trades)
+│   └── external_prices.py  # Kalshi + Metaculus price clients
 ├── news/
 │   ├── models.py           # NewsItem model
 │   ├── provider.py         # NewsProvider protocol
 │   ├── google_rss.py       # Google News RSS provider (free)
 │   ├── tavily_client.py    # Tavily search provider (optional)
-│   └── cached.py           # Cached + rate-limited wrapper
+│   ├── cached.py           # Cached + rate-limited wrapper
+│   └── sentiment.py        # LLM sentiment scoring + keyword spike tracking
 ├── strategies/
 │   ├── base.py             # Strategy ABC + Signal dataclass
 │   ├── signal_trader.py    # Volume/price-move signal strategy
 │   ├── market_maker.py     # Bid/ask quoting around midpoint
 │   ├── arbitrageur.py      # Price-sum deviation strategy
-│   ├── ai_analyst.py       # LLM-based probability strategy with TA + news enrichment
+│   ├── ai_analyst.py       # LLM-based probability strategy with TA + news + volatility + sentiment enrichment
 │   ├── technical_analyst.py # Rule-based TA strategy (EMA, RSI, squeeze)
+│   ├── whale_follower.py   # Whale following strategy (Gamma API)
+│   ├── cross_platform_arb.py # Cross-platform arbitrage (Kalshi/Metaculus)
+│   ├── volatility.py       # Volatility anomaly computation (AIAnalyst enrichment)
 │   ├── indicators.py       # Technical indicator computations (EMA, RSI, Bollinger)
 │   └── aggregator.py       # Signal dedup/filter/consensus
 ├── backtest/
@@ -705,6 +773,7 @@ mypy src/
 | **8. Monitoring** | Done | Dashboard, structured logging, alerts, signal/portfolio tracking |
 | **9. Auto-Tuning** | Done | Config hot-reload, evaluate command, multi-provider LLM-driven parameter tuning |
 | **10. TA + News** | Done | Technical indicators (EMA, RSI, squeeze), news headlines, TechnicalAnalyst strategy, AI prompt enrichment |
+| **11. Strategy Enhancement** | Done | Whale tracking, cross-platform arb, volatility anomaly detection, sentiment analysis |
 
 ## Tech Stack
 
