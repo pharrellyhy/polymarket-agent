@@ -6,6 +6,7 @@ detection. Both clients use urllib and TTLCache following existing patterns.
 
 import json
 import logging
+import os
 import urllib.request
 from typing import Any
 
@@ -35,8 +36,9 @@ class KalshiClient:
 
     _BASE_URL = "https://trading-api.kalshi.com/trade-api/v2"
 
-    def __init__(self, cache_ttl: float = 300.0) -> None:
+    def __init__(self, cache_ttl: float = 300.0, api_key_env: str = "KALSHI_API_KEY") -> None:
         self._cache = TTLCache(default_ttl=cache_ttl)
+        self._api_key = os.environ.get(api_key_env, "")
 
     def get_active_events(self, *, limit: int = 50) -> list[CrossPlatformPrice]:
         """Fetch active events and extract yes-side prices."""
@@ -52,7 +54,10 @@ class KalshiClient:
 
     def _fetch_prices(self, url: str) -> list[CrossPlatformPrice]:
         """Fetch and parse event prices from Kalshi."""
-        req = urllib.request.Request(url, headers=_HEADERS)
+        headers = {**_HEADERS}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
+        req = urllib.request.Request(url, headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:  # noqa: S310
                 data: dict[str, Any] = json.loads(resp.read().decode())
@@ -91,8 +96,9 @@ class MetaculusClient:
 
     _BASE_URL = "https://www.metaculus.com/api2"
 
-    def __init__(self, cache_ttl: float = 600.0) -> None:
+    def __init__(self, cache_ttl: float = 600.0, api_key_env: str = "METACULUS_API_KEY") -> None:
         self._cache = TTLCache(default_ttl=cache_ttl)
+        self._api_key = os.environ.get(api_key_env, "")
 
     def get_active_questions(self, *, limit: int = 50) -> list[CrossPlatformPrice]:
         """Fetch active binary questions with community predictions."""
@@ -108,7 +114,10 @@ class MetaculusClient:
 
     def _fetch_prices(self, url: str) -> list[CrossPlatformPrice]:
         """Fetch and parse question predictions from Metaculus."""
-        req = urllib.request.Request(url, headers=_HEADERS)
+        headers = {**_HEADERS}
+        if self._api_key:
+            headers["Authorization"] = f"Token {self._api_key}"
+        req = urllib.request.Request(url, headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:  # noqa: S310
                 data: dict[str, Any] = json.loads(resp.read().decode())

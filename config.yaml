@@ -58,6 +58,8 @@ strategies:
     external_fee: 0.03
     kalshi_cache_ttl: 300.0
     metaculus_cache_ttl: 600.0
+    kalshi_api_key_env: KALSHI_API_KEY
+    metaculus_api_key_env: METACULUS_API_KEY
 aggregation:
   min_confidence: 0.01
   min_strategies: 1

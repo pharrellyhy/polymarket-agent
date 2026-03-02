@@ -41,6 +41,8 @@ class CrossPlatformArb(Strategy):
         self._external_fee: float = _DEFAULT_EXTERNAL_FEE
         self._kalshi: KalshiClient = KalshiClient(cache_ttl=_DEFAULT_KALSHI_CACHE_TTL)
         self._metaculus: MetaculusClient = MetaculusClient(cache_ttl=_DEFAULT_METACULUS_CACHE_TTL)
+        self._kalshi_api_key_env: str = "KALSHI_API_KEY"
+        self._metaculus_api_key_env: str = "METACULUS_API_KEY"
 
     def configure(self, config: dict[str, Any]) -> None:
         self._min_divergence = float(config.get("min_divergence", _DEFAULT_MIN_DIVERGENCE))
@@ -48,10 +50,12 @@ class CrossPlatformArb(Strategy):
         self._order_size = float(config.get("order_size", _DEFAULT_ORDER_SIZE))
         self._polymarket_fee = float(config.get("polymarket_fee", _DEFAULT_POLYMARKET_FEE))
         self._external_fee = float(config.get("external_fee", _DEFAULT_EXTERNAL_FEE))
+        self._kalshi_api_key_env = config.get("kalshi_api_key_env", self._kalshi_api_key_env)
+        self._metaculus_api_key_env = config.get("metaculus_api_key_env", self._metaculus_api_key_env)
         kalshi_ttl = float(config.get("kalshi_cache_ttl", _DEFAULT_KALSHI_CACHE_TTL))
         metaculus_ttl = float(config.get("metaculus_cache_ttl", _DEFAULT_METACULUS_CACHE_TTL))
-        self._kalshi = KalshiClient(cache_ttl=kalshi_ttl)
-        self._metaculus = MetaculusClient(cache_ttl=metaculus_ttl)
+        self._kalshi = KalshiClient(cache_ttl=kalshi_ttl, api_key_env=self._kalshi_api_key_env)
+        self._metaculus = MetaculusClient(cache_ttl=metaculus_ttl, api_key_env=self._metaculus_api_key_env)
 
     def analyze(self, markets: list[Market], data: DataProvider) -> list[Signal]:
         external_prices = self._fetch_external_prices()
