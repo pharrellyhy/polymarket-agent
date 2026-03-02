@@ -4,6 +4,59 @@ Last updated: 2026-03-02
 
 ---
 
+## Session Entry — 2026-03-02 (Paper Trading Test: New Strategy Capabilities)
+
+### Problem
+- 4 new capabilities (WhaleFollower, CrossPlatformArb, volatility enrichment, sentiment/keyword enrichment) needed live paper trading validation before production use.
+- WhaleFollower's `get_leaderboard()` used wrong CLI path (`polymarket leaderboard` instead of `polymarket data leaderboard`), and `Trader.from_cli()` didn't parse the CLI's `user_name`/`proxy_wallet` fields.
+- Kalshi and Metaculus APIs require authentication (401/403), making CrossPlatformArb inoperable without API keys.
+- Reentry cooldown of 24h + max_open_orders of 10 blocked nearly all trading activity during experiments.
+
+### Solution
+- Fixed `get_leaderboard()` CLI path to `polymarket data leaderboard`.
+- Added `address` field to `Trader` model; updated `from_cli()` to parse `user_name` and `proxy_wallet` from CLI output.
+- Refactored `WhaleFollower` to use CLI-based `data.get_trader_trades()` (via `polymarket data trades`) instead of broken Gamma API `/activity` endpoint (404). Added slug-based market matching alongside ID matching.
+- Added `get_trader_trades()` to `PolymarketData` client and `DataProvider` protocol.
+- Updated whale follower tests for new CLI-based data flow.
+- Ran 8 experiments (Phase 1: 1A/1B/1C enrichment smoke tests, Phase 2: 2A/2B strategy tests, Phase 3: 3A/3B combined, Phase 4: 4G tuning). All experiments pass with 0 errors.
+- Config tuned: `min_divergence` 0.10→0.05, `reentry_cooldown_hours` 24→1, `max_open_orders` 10→30, sentiment+keyword enrichments enabled, focus disabled.
+
+### Edits
+- `src/polymarket_agent/data/client.py` — fixed leaderboard CLI path (`data leaderboard`); added `get_trader_trades()` method using `polymarket data trades`
+- `src/polymarket_agent/data/models.py` — added `address` and `slug` fields to `Trader` and `WhaleTrade`; updated `Trader.from_cli()` to parse `user_name`, `proxy_wallet`, `rank` from CLI output
+- `src/polymarket_agent/data/provider.py` — added `get_trader_trades()` to `DataProvider` protocol
+- `src/polymarket_agent/strategies/whale_follower.py` — removed Gamma client dependency; refactored to use `data.get_trader_trades()` for CLI-based trade fetching; added slug-based market matching
+- `tests/test_whale_follower.py` — rewritten tests for CLI-based data format (condition_id, slug, side fields)
+- `config.yaml` — `min_divergence` 0.10→0.05, `reentry_cooldown_hours` 24→1, `max_open_orders` 10→30, sentiment+keyword enabled, focus disabled
+- `scripts/run_experiment.sh` — **NEW** experiment runner helper
+- `results/` — **NEW** directory with baseline and experiment JSON evaluations
+
+### NOT Changed
+- No changes to CrossPlatformArb code (blocked by API auth — needs Kalshi/Metaculus API keys)
+- No changes to execution layer, DB schema, or orchestrator flow
+- No changes to sentiment/keyword/volatility enrichment code (all passed smoke tests unchanged)
+
+### Verification
+```bash
+uv run pytest tests/test_whale_follower.py -q  # 7 passed
+uv run pytest tests/ -q                        # 439 passed
+# Experiment results in results/exp_*.json
+# Experiment logs in logs/exp_*.log
+```
+
+### Key Findings
+| Capability | Status | Notes |
+|---|---|---|
+| Sentiment enrichment | WORKING | Extra LLM call per market, 0 errors |
+| Keyword spike | WORKING | Cold start (needs 24h baseline), RSS queries execute |
+| Both enrichments | WORKING | No resource contention |
+| WhaleFollower | CODE FIXED | 0 signals in practice (no overlap between top-10 monthly traders and active 50 markets) |
+| CrossPlatformArb | BLOCKED | Kalshi 401, Metaculus 403 — needs API credentials |
+| Full stack (all 4) | WORKING | 0 crashes, 0 errors |
+| min_divergence 0.05 | IMPROVED | Doubled signal count (3→6 per tick) |
+
+---
+
 ## Session Entry — 2026-03-02 (Review Follow-Up: External Price Parsing + Whale Dedup State)
 
 ### Problem

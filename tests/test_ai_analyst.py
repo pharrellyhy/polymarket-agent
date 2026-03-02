@@ -3,7 +3,8 @@
 import json
 from unittest.mock import MagicMock, patch
 
-from polymarket_agent.data.models import Market
+from polymarket_agent.data.models import Market, PricePoint
+from polymarket_agent.news.models import NewsItem
 from polymarket_agent.strategies.ai_analyst import _DEFAULT_PROVIDER, AIAnalyst
 
 
@@ -246,8 +247,6 @@ def test_configure_invalid_provider_falls_back_to_default() -> None:
 
 def test_prompt_includes_technical_analysis() -> None:
     """When price history is available, the prompt should include TA section."""
-    from polymarket_agent.data.models import PricePoint
-
     strategy = _make_analyst("0.80")
     data = MagicMock()
     prices = [PricePoint(timestamp=f"2026-02-{i:02d}T00:00:00Z", price=0.4 + 0.005 * i) for i in range(30)]
@@ -265,8 +264,6 @@ def test_prompt_includes_technical_analysis() -> None:
 
 def test_prompt_includes_news_when_provider_set() -> None:
     """When a news provider is attached, the prompt should include news headlines."""
-    from polymarket_agent.news.models import NewsItem
-
     strategy = _make_analyst("0.80")
     news_provider = MagicMock()
     news_provider.search.return_value = [
@@ -311,9 +308,6 @@ def test_prompt_graceful_without_news() -> None:
 
 def test_prompt_includes_both_ta_and_news() -> None:
     """When both TA and news are available, prompt includes both sections."""
-    from polymarket_agent.data.models import PricePoint
-    from polymarket_agent.news.models import NewsItem
-
     strategy = _make_analyst("0.80")
 
     # Set up TA data
@@ -337,8 +331,6 @@ def test_prompt_includes_both_ta_and_news() -> None:
 
 def test_prompt_sanitizes_news_titles() -> None:
     """News titles with control chars should be sanitized before prompt insertion."""
-    from polymarket_agent.news.models import NewsItem
-
     strategy = _make_analyst("0.80")
     news_provider = MagicMock()
     news_provider.search.return_value = [NewsItem(title="Alert\x00\x01: major update", published="2026-02-28")]
@@ -354,8 +346,6 @@ def test_prompt_sanitizes_news_titles() -> None:
 
 def test_prompt_uses_configured_news_max_results() -> None:
     """AIAnalyst should honor configured news max-results for prompt enrichment."""
-    from polymarket_agent.news.models import NewsItem
-
     strategy = _make_analyst("0.80")
     news_provider = MagicMock()
     news_provider.search.return_value = [NewsItem(title="Headline", published="2026-02-28")]

@@ -163,6 +163,7 @@ class Trader(BaseModel):
 
     rank: int
     name: str
+    address: str = ""
     volume: float = 0.0
     pnl: float = 0.0
     markets_traded: int = 0
@@ -170,14 +171,22 @@ class Trader(BaseModel):
     @classmethod
     def from_cli(cls, data: dict[str, Any], rank: int = 0) -> "Trader":
         """Parse a trader dict from the polymarket CLI JSON output."""
+        name = _str_field(data, "name") or _str_field(data, "username") or _str_field(data, "user_name") or "unknown"
+        markets_traded = 0
+        if "marketsTraded" in data:
+            markets_traded = int(data["marketsTraded"])
+        elif "markets_traded" in data:
+            markets_traded = int(_float_field(data, "markets_traded"))
+        address = (
+            _str_field(data, "address") or _str_field(data, "proxy_wallet") or _str_field(data, "proxyWallet") or ""
+        )
         return cls(
-            rank=rank,
-            name=_str_field(data, "name") or _str_field(data, "username") or "unknown",
+            rank=data.get("rank", rank),
+            name=name,
+            address=address,
             volume=_float_field(data, "volume"),
             pnl=float(data["pnl"]) if "pnl" in data else _float_field(data, "profit"),
-            markets_traded=int(data["marketsTraded"])
-            if "marketsTraded" in data
-            else int(_float_field(data, "markets_traded")),
+            markets_traded=markets_traded,
         )
 
 
@@ -306,6 +315,7 @@ class WhaleTrade(BaseModel):
     size: float  # USDC
     price: float = 0.0
     timestamp: str = ""
+    slug: str = ""
 
 
 class CrossPlatformPrice(BaseModel):

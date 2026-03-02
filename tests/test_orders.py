@@ -6,7 +6,9 @@ from unittest.mock import patch
 from polymarket_agent.config import AppConfig, ConditionalOrderConfig
 from polymarket_agent.data.models import Spread
 from polymarket_agent.db import Database
+from polymarket_agent.orchestrator import Orchestrator
 from polymarket_agent.orders import OrderStatus, OrderType
+from polymarket_agent.strategies.base import Signal
 
 # ------------------------------------------------------------------
 # DB CRUD
@@ -121,8 +123,6 @@ class TestConditionalOrderChecking:
             conditional_orders=ConditionalOrderConfig(enabled=enabled),
         )
         with patch("polymarket_agent.orchestrator.PolymarketData"):
-            from polymarket_agent.orchestrator import Orchestrator
-
             orch = Orchestrator(config=cfg, db_path=tmp_path / "test.db")
         return orch
 
@@ -304,11 +304,7 @@ class TestAutoConditionalOrders:
             conditional_orders=ConditionalOrderConfig(enabled=True),
         )
         with patch("polymarket_agent.orchestrator.PolymarketData"):
-            from polymarket_agent.orchestrator import Orchestrator
-
             orch = Orchestrator(config=cfg, db_path=tmp_path / "test.db")
-
-        from polymarket_agent.strategies.base import Signal
 
         signal = Signal(
             strategy="test",
@@ -333,11 +329,7 @@ class TestAutoConditionalOrders:
             conditional_orders=ConditionalOrderConfig(enabled=True, trailing_stop_enabled=True),
         )
         with patch("polymarket_agent.orchestrator.PolymarketData"):
-            from polymarket_agent.orchestrator import Orchestrator
-
             orch = Orchestrator(config=cfg, db_path=tmp_path / "test.db")
-
-        from polymarket_agent.strategies.base import Signal
 
         signal = Signal(
             strategy="test",
@@ -362,11 +354,7 @@ class TestAutoConditionalOrders:
             conditional_orders=ConditionalOrderConfig(enabled=True),
         )
         with patch("polymarket_agent.orchestrator.PolymarketData"):
-            from polymarket_agent.orchestrator import Orchestrator
-
             orch = Orchestrator(config=cfg, db_path=tmp_path / "test.db")
-
-        from polymarket_agent.strategies.base import Signal
 
         signal = Signal(
             strategy="test",
@@ -389,11 +377,7 @@ class TestAutoConditionalOrders:
             conditional_orders=ConditionalOrderConfig(enabled=True, default_stop_loss_pct=0.10),
         )
         with patch("polymarket_agent.orchestrator.PolymarketData"):
-            from polymarket_agent.orchestrator import Orchestrator
-
             orch = Orchestrator(config=cfg, db_path=tmp_path / "test.db")
-
-        from polymarket_agent.strategies.base import Signal
 
         signal = Signal(
             strategy="test",

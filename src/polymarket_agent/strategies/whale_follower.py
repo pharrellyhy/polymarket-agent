@@ -1,14 +1,13 @@
 """WhaleFollower strategy — follow top-ranked traders' moves.
 
-Uses the CLI leaderboard to identify top traders, then queries the
-Gamma API for their recent activity. When a top trader makes a trade
-above the configured minimum size, a follow signal is emitted.
+Uses the CLI leaderboard to identify top traders, then queries their
+recent trades via the CLI. When a top trader makes a trade above the
+configured minimum size, a follow signal is emitted.
 """
 
 import logging
 from typing import Any, Literal
 
-from polymarket_agent.data.gamma_client import GammaClient
 from polymarket_agent.data.models import Market, WhaleTrade
 from polymarket_agent.data.provider import DataProvider
 from polymarket_agent.strategies.base import Signal, Strategy
@@ -19,7 +18,6 @@ _DEFAULT_TOP_N = 10
 _DEFAULT_MIN_TRADE_SIZE = 500.0
 _DEFAULT_ORDER_SIZE = 25.0
 _DEFAULT_LEADERBOARD_PERIOD = "month"
-_DEFAULT_GAMMA_CACHE_TTL = 120.0
 
 
 class WhaleFollower(Strategy):
@@ -37,7 +35,6 @@ class WhaleFollower(Strategy):
         self._min_trade_size: float = _DEFAULT_MIN_TRADE_SIZE
         self._order_size: float = _DEFAULT_ORDER_SIZE
         self._leaderboard_period: str = _DEFAULT_LEADERBOARD_PERIOD
-        self._gamma: GammaClient = GammaClient(cache_ttl=_DEFAULT_GAMMA_CACHE_TTL)
         self._seen: set[str] = set()  # "trader_name:market_id" dedup keys
 
     def configure(self, config: dict[str, Any]) -> None:
@@ -45,8 +42,6 @@ class WhaleFollower(Strategy):
         self._min_trade_size = float(config.get("min_trade_size", _DEFAULT_MIN_TRADE_SIZE))
         self._order_size = float(config.get("order_size", _DEFAULT_ORDER_SIZE))
         self._leaderboard_period = config.get("leaderboard_period", _DEFAULT_LEADERBOARD_PERIOD)
-        gamma_ttl = float(config.get("gamma_cache_ttl", _DEFAULT_GAMMA_CACHE_TTL))
-        self._gamma = GammaClient(cache_ttl=gamma_ttl)
 
     def analyze(self, markets: list[Market], data: DataProvider) -> list[Signal]:
         traders = data.get_leaderboard(period=self._leaderboard_period)
@@ -56,39 +51,56 @@ class WhaleFollower(Strategy):
             logger.debug("WhaleFollower: no traders from leaderboard")
             return []
 
-        # Build a lookup from market ID to market for active markets
-        market_lookup: dict[str, Market] = {m.id: m for m in markets if m.active and not m.closed}
+        # Build lookups for active markets by ID and slug
+        market_by_id: dict[str, Market] = {m.id: m for m in markets if m.active and not m.closed}
+        market_by_slug: dict[str, Market] = {m.slug.lower(): m for m in markets if m.active and not m.closed}
 
-        whale_trades = self._fetch_whale_trades(top_traders)
-        return self._generate_signals(whale_trades, market_lookup)
+        whale_trades = self._fetch_whale_trades(top_traders, data)
+        return self._generate_signals(whale_trades, market_by_id, market_by_slug)
 
-    def _fetch_whale_trades(self, traders: list[Any]) -> list[WhaleTrade]:
-        """Fetch recent activity for each top trader from the Gamma API."""
+    def _fetch_whale_trades(self, traders: list[Any], data: DataProvider) -> list[WhaleTrade]:
+        """Fetch recent trades for each top trader via the CLI."""
         all_trades: list[WhaleTrade] = []
         for trader in traders:
             address = getattr(trader, "address", "") or getattr(trader, "name", "")
             if not address:
                 continue
-            activities = self._gamma.get_trader_activity(address)
-            trades = self._gamma.parse_whale_trades(
-                activities,
-                trader_name=trader.name,
-                trader_address=address,
-                rank=trader.rank,
-                min_size=self._min_trade_size,
-            )
-            all_trades.extend(trades)
+            raw_trades = data.get_trader_trades(address, limit=20)
+            for t in raw_trades:
+                size = float(t.get("size", 0) or 0)
+                if size < self._min_trade_size:
+                    continue
+                side_raw = str(t.get("side", "buy")).lower()
+                all_trades.append(
+                    WhaleTrade(
+                        trader_name=trader.name,
+                        trader_address=address,
+                        rank=trader.rank,
+                        market_id=str(t.get("condition_id", "")),
+                        token_id="",
+                        side=side_raw if side_raw in ("buy", "sell") else "buy",
+                        size=size,
+                        price=float(t.get("price", 0) or 0),
+                        timestamp=str(t.get("timestamp", "")),
+                        slug=str(t.get("slug", "")),
+                    )
+                )
         return all_trades
 
     def _generate_signals(
         self,
         whale_trades: list[WhaleTrade],
-        market_lookup: dict[str, Market],
+        market_by_id: dict[str, Market],
+        market_by_slug: dict[str, Market],
     ) -> list[Signal]:
         """Convert whale trades into follow signals, with deduplication."""
         signals: list[Signal] = []
         for trade in whale_trades:
-            market = market_lookup.get(trade.market_id)
+            market = market_by_id.get(trade.market_id)
+            if market is None:
+                slug = getattr(trade, "slug", "")
+                if slug:
+                    market = market_by_slug.get(slug.lower())
             if market is None:
                 continue
 

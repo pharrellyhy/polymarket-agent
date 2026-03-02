@@ -6,7 +6,7 @@ provider satisfy this protocol via structural typing.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
     from polymarket_agent.data.models import Market, OrderBook, PricePoint, Spread, Trader
@@ -34,3 +34,5 @@ class DataProvider(Protocol):
     ) -> list[PricePoint]: ...
 
     def get_leaderboard(self, *, period: str = "month") -> list[Trader]: ...
+
+    def get_trader_trades(self, address: str, *, limit: int = 20) -> list[dict[str, Any]]: ...

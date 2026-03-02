@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -330,8 +331,6 @@ class Orchestrator:
         Converts search queries into slugs and tries both event-slug and
         market-text matching via the Gamma API.
         """
-        import re
-
         gamma = GammaClient(cache_ttl=60.0)
         all_markets: dict[str, Market] = {}
 

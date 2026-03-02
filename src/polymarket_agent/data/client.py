@@ -6,6 +6,7 @@ models and caching results with a configurable TTL.
 
 import json
 import subprocess
+import time as _time
 from typing import Any
 
 from polymarket_agent.data.cache import TTLCache
@@ -73,10 +74,20 @@ class PolymarketData:
 
     def get_leaderboard(self, *, period: str = "month") -> list[Trader]:
         """Return top traders from the Polymarket leaderboard."""
-        args = ["polymarket", "leaderboard", "--period", period, "-o", "json"]
+        args = ["polymarket", "data", "leaderboard", "--period", period, "-o", "json"]
         raw = self._run_cli_cached(f"leaderboard:{period}", args)
         data: list[dict[str, Any]] = json.loads(raw)
         return [Trader.from_cli(t, rank=i + 1) for i, t in enumerate(data)]
+
+    def get_trader_trades(self, address: str, *, limit: int = 20) -> list[dict[str, Any]]:
+        """Fetch recent trades for a wallet address."""
+        args = ["polymarket", "data", "trades", address, "--limit", str(limit), "-o", "json"]
+        try:
+            raw = self._run_cli_cached(f"trades:{address}:{limit}", args)
+            data = json.loads(raw)
+            return data if isinstance(data, list) else []
+        except (RuntimeError, json.JSONDecodeError):
+            return []
 
     def get_event(self, event_id: str) -> Event | None:
         """Fetch a single event by ID or slug. Returns None if not found."""
@@ -148,8 +159,6 @@ class PolymarketData:
         Retries on transient failures. Raises :class:`RuntimeError` when
         all attempts fail or the process times out.
         """
-        import time as _time
-
         for attempt in range(retries):
             try:
                 result = subprocess.run(  # noqa: S603

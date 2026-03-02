@@ -4,6 +4,7 @@ import json
 import subprocess
 
 import pytest
+
 from polymarket_agent.data.client import PolymarketData
 
 MOCK_MARKETS_JSON = json.dumps(

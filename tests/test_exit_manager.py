@@ -3,6 +3,7 @@
 from datetime import datetime, timedelta, timezone
 
 import pytest
+
 from polymarket_agent.config import ExitManagerConfig
 from polymarket_agent.strategies.exit_manager import ExitManager
 

@@ -6,6 +6,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
+from typer.testing import CliRunner
+
 from polymarket_agent.autotune import (
     _apply_changes,
     _init_client,
@@ -14,7 +16,6 @@ from polymarket_agent.autotune import (
     run_autotune,
 )
 from polymarket_agent.cli import app
-from typer.testing import CliRunner
 
 runner = CliRunner()
 
