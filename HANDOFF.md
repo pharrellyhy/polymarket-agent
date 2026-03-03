@@ -4,6 +4,114 @@ Last updated: 2026-03-03
 
 ---
 
+## Session Entry — 2026-03-03 (Review Pass 2: Toggle Semantics + Metrics Script Fixes)
+
+### Problem
+- The latest paper-trading toggle rollout worked, but review found two practical issues:
+- `TechnicalAnalyst` reason strings still included `macd=`/`regime=` even when those features were disabled via config flags, which made A/B logs misleading.
+- `scripts/compare_test_runs.py` counted all `signal_log` rows as “signals generated” (including `executed`/`rejected` statuses), and depended on SQL `SQRT`, which is less portable across SQLite builds.
+- New AIAnalyst toggle flags (`platt_scaling`, `sigmoid_confidence`) had no direct tests.
+
+### Solution
+- Aligned TA reason output with feature toggles:
+- `macd=` is now emitted only when `macd_enabled` is true.
+- `regime=` is now emitted only when `regime_adaptive` is true.
+- Hardened comparison metrics:
+- Signal/confidence metrics now use only `status='generated'` rows to avoid double counting.
+- Standard deviation is now computed in Python (`math.sqrt`) from mean and mean-square values.
+- Added SQLite read error handling in the script for clearer failures.
+- Added focused tests for AIAnalyst toggle behavior and stronger TA toggle assertions.
+
+### Edits
+- `src/polymarket_agent/strategies/technical_analyst.py`
+  - Converted `_build_reason()` from static to instance method.
+  - Gated `macd=` and `regime=` reason fields behind `_macd_enabled` and `_regime_adaptive`.
+- `tests/test_technical_analyst.py`
+  - Strengthened existing toggle tests to assert reason-field presence/absence with flags on/off.
+- `tests/test_ai_analyst.py`
+  - Added `test_ai_analyst_platt_scaling_toggle_controls_extremization`.
+  - Added `test_ai_analyst_sigmoid_confidence_toggle_controls_mapping`.
+- `scripts/compare_test_runs.py`
+  - Filtered signal metrics to `status='generated'`.
+  - Replaced SQL `SQRT` usage with Python variance/std-dev computation.
+  - Added `sqlite3.Error` handling and returned structured script errors.
+
+### NOT Changed
+- No changes to strategy signal direction logic.
+- No changes to execution layer, DB schema, or orchestrator control flow.
+- No changes to default flag values (all remain `true` unless disabled in config profiles).
+
+### Verification
+```bash
+uv run pytest tests/test_ai_analyst.py tests/test_technical_analyst.py tests/test_aggregator.py -q
+# 50 passed in 0.71s
+
+uv run ruff check src/polymarket_agent/strategies/technical_analyst.py scripts/compare_test_runs.py tests/test_ai_analyst.py tests/test_technical_analyst.py tests/test_aggregator.py
+# All checks passed!
+
+uv run mypy src/polymarket_agent/strategies/technical_analyst.py
+# Success: no issues found in 1 source file
+
+uv run python scripts/compare_test_runs.py --db-dir data
+# Script runs; warns and prints N/A table when profile DBs are not present.
+```
+
+### Branch
+- Working branch: `main`
+
+---
+
+## Session Entry — 2026-03-03 (Paper-Trading Test Plan: Config Flags + A/B Profiles)
+
+### Problem
+- Phase 1–3 strategy improvements (Platt scaling, sigmoid confidence, MACD, regime detection, confidence blending, conflict resolution, trailing stop) were all hardcoded — no way to disable them for A/B comparison.
+- The implementation plan (`docs/plans/2026-03-03-strategy-research-improvements.md`) was missing 3 items from the research doc: multi-timeframe analysis, multi-model ensemble voting, signal accuracy tracking + performance-weighted aggregation + agentic search. These were added as Phases 4–8.
+- No test infrastructure existed for running the agent in paper mode against live data with controlled feature toggles.
+
+### Solution
+- Added 6 config toggle flags across 3 strategy files, each defaulting to `true` (preserving current behavior):
+  - `ai_analyst.platt_scaling`, `ai_analyst.sigmoid_confidence`
+  - `technical_analyst.macd_enabled`, `technical_analyst.regime_adaptive`
+  - `aggregation.conflict_resolution`, `aggregation.blend_confidence`
+- Created 4 YAML config profiles in `configs/test/` (baseline → phase1 → phase2 → phase3), each layering one more phase of features.
+- Built `scripts/compare_test_runs.py` to query each profile's SQLite DB and print a side-by-side metrics table.
+- Updated the strategy research plan with Phases 4–8 from a separate design (ensemble voting, multi-timeframe, signal accuracy, performance-weighted aggregation, agentic search).
+
+### Edits
+- `src/polymarket_agent/strategies/ai_analyst.py` — added `_platt_scaling` and `_sigmoid_confidence` flags to `__init__`/`configure()`; guarded `_extremize()` and sigmoid formula behind flags
+- `src/polymarket_agent/strategies/technical_analyst.py` — added `_macd_enabled` and `_regime_adaptive` flags; converted `_compute_confidence` from `@staticmethod` to instance method; guarded regime weights and MACD scoring
+- `src/polymarket_agent/strategies/aggregator.py` — added `conflict_resolution` and `blend_confidence` params to `aggregate_signals()`; guarded conflict suppression and confidence blending
+- `src/polymarket_agent/config.py` — added `conflict_resolution` and `blend_confidence` fields to `AggregationConfig`
+- `src/polymarket_agent/orchestrator.py` — pass new aggregation flags to `aggregate_signals()` at both call sites
+- `tests/test_aggregator.py` — added `test_conflict_resolution_disabled_keeps_both_sides`, `test_blend_confidence_disabled_uses_max`
+- `tests/test_technical_analyst.py` — added `test_macd_disabled_zeroes_macd_weight`, `test_regime_adaptive_disabled_uses_fixed_weights`
+- `configs/test/baseline.yaml` — all Phase 1–3 features off, `method: fixed`
+- `configs/test/phase1.yaml` — Platt scaling + sigmoid + fractional Kelly
+- `configs/test/phase2.yaml` — + MACD + regime-adaptive weights
+- `configs/test/phase3.yaml` — + conflict resolution + blending + trailing stop
+- `scripts/compare_test_runs.py` — queries signal_log/trades tables, prints comparison
+- `docs/plans/2026-03-03-strategy-research-improvements.md` — added Phases 4–8, dependency graph, updated status
+- `docs/plans/2026-03-03-paper-trading-test-plan-design.md` — design doc for this work
+- `docs/plans/2026-03-03-paper-trading-test-plan.md` — implementation plan for this work
+
+### NOT Changed
+- No changes to indicator computation logic (`indicators.py`), exit manager logic, or position sizing
+- No changes to DB schema or CLI commands
+- Strategy behavior unchanged when all flags are `true` (the default)
+
+### Verification
+```bash
+uv run pytest tests/ -q                          # 447 passed
+uv run python -c "from polymarket_agent.config import load_config; from pathlib import Path; c = load_config(Path('configs/test/baseline.yaml')); print(c.position_sizing.method)"  # fixed
+uv run python -c "from polymarket_agent.config import load_config; from pathlib import Path; c = load_config(Path('configs/test/phase3.yaml')); print(c.position_sizing.method, c.aggregation.conflict_resolution)"  # fractional_kelly True
+uv run python scripts/compare_test_runs.py --db-dir data  # prints clean table with zeros
+```
+
+### Branch
+- Working branch: `main`
+
+---
+
 ## Session Entry — 2026-03-03 (Code Review Follow-Up: Strategy Simplification Pass)
 
 ### Problem
@@ -447,159 +555,13 @@ uv run mypy src/polymarket_agent/orchestrator.py src/polymarket_agent/cli.py  # 
 
 ---
 
-## Session Entry — 2026-02-28 (Focus Trading + Research Command)
-
-### Problem
-- The agent traded on ALL active markets (up to 50) with no way to focus on a specific event.
-- For bracket markets (e.g., "Elon Musk tweets" with brackets like "100-149", "150-199"), the AI analyst evaluated each bracket in isolation with no awareness of sibling brackets or the full probability distribution.
-- No CLI tool existed for deep analysis of a specific event before committing to trading it.
-
-### Solution
-- **FocusConfig:** New Pydantic model in `config.py` with `enabled`, `search_queries`, `market_ids`, `market_slugs` fields. Added to `AppConfig`. Filters combine with OR logic.
-- **Focus filter in orchestrator:** `_apply_focus_filter()` method applied in both `tick()` and `generate_signals()`. Returns markets unchanged when disabled.
-- **Bracket context for AI analyst:** `_evaluate()` now accepts `all_markets`, detects sibling brackets by shared 30-char question prefix, and appends a `BRACKET DISTRIBUTION` section to the LLM prompt showing all brackets with prices.
-- **`research` CLI command:** Interactive event picker that groups search results by shared prefix (detecting bracket events), displays price/volume/liquidity table, technical indicators (trend, RSI, EMA crossover, squeeze), and AI probability estimates with divergence.
-- **Config update:** `focus.enabled: true` with `search_queries: ["Elon Musk"]` targeting the tweets event.
-
-### Edits
-- `src/polymarket_agent/config.py` — added `FocusConfig` model, wired into `AppConfig` as `focus` field
-- `src/polymarket_agent/orchestrator.py` — added `Market` import, `_apply_focus_filter()` method, applied in `tick()` and `generate_signals()`
-- `src/polymarket_agent/strategies/ai_analyst.py` — added `_find_sibling_brackets()`, `_format_bracket_distribution()` static methods; `_evaluate()` accepts `all_markets` kwarg; `analyze()` passes markets through
-- `src/polymarket_agent/cli.py` — added `research` command with bracket grouping, event picker, TA display, AI estimates
-- `config.yaml` — added `focus:` section (enabled, search_queries)
-- `docs/plans/2026-02-28-focus-trading.md` — **NEW** design document
-
-### NOT Changed
-- No changes to existing strategy logic (SignalTrader, MarketMaker, Arbitrageur, TechnicalAnalyst)
-- No changes to execution layer, MCP server, or dashboard
-- No DB schema changes
-- All 391 existing tests pass unchanged (backward-compatible: `all_markets` defaults to `None`)
-
-### Verification
-```bash
-uv run pytest tests/ -v                                          # 391 passed
-ruff check src/polymarket_agent/config.py src/polymarket_agent/orchestrator.py src/polymarket_agent/strategies/ai_analyst.py src/polymarket_agent/cli.py  # All checks passed
-uv run mypy src/polymarket_agent/config.py src/polymarket_agent/orchestrator.py src/polymarket_agent/strategies/ai_analyst.py src/polymarket_agent/cli.py  # Success: no issues found
-uv run polymarket-agent research "Elon Musk tweets"              # Shows bracket analysis
-uv run polymarket-agent tick                                      # Only processes focused markets
-```
-
-### Branch
-- Working branch: `main`
-
----
-
-## Session Entry — 2026-02-28 (Review Follow-Up: News `max_results` Wiring)
-
-### Problem
-- Follow-up review of the TA+news additions found a config/application mismatch: `news.max_results` existed in config, but AIAnalyst always queried news providers with a hardcoded `max_results=5`.
-- This made `news.max_results` effectively ignored for prompt enrichment behavior.
-
-### Solution
-- **TDD regression first:** Added a failing AIAnalyst test verifying that attached news providers are called with the configured max-result count.
-- **Minimal AIAnalyst update:** Extended `set_news_provider(...)` with optional `max_results`, persisted as strategy state, and used it in `_fetch_news()`.
-- **Orchestrator wiring:** When attaching the shared news provider to AIAnalyst, pass `config.news.max_results` through.
-
-### Edits
-- `src/polymarket_agent/strategies/ai_analyst.py` — added configurable `_news_max_results`, updated `set_news_provider(...)`, and removed hardcoded `5` in `_fetch_news()`
-- `src/polymarket_agent/orchestrator.py` — pass `max_results=self._config.news.max_results` when wiring news provider into AIAnalyst
-- `tests/test_ai_analyst.py` — added `test_prompt_uses_configured_news_max_results`
-- `HANDOFF.md` — added this review follow-up entry; removed oldest session entry to keep last 10 entries
-
-### NOT Changed
-- No changes to technical indicator formulas or TechnicalAnalyst signal logic.
-- No changes to provider implementations (`google_rss`, `tavily`, cache/rate-limit behavior).
-- No DB schema changes.
-
-### Verification
-```bash
-uv run python -m pytest tests/test_ai_analyst.py::test_prompt_uses_configured_news_max_results -q   # failed first, then passed after fix
-uv run python -m pytest tests/test_ai_analyst.py tests/test_orchestrator.py -q                       # 28 passed
-ruff check src/polymarket_agent/strategies/ai_analyst.py src/polymarket_agent/orchestrator.py tests/test_ai_analyst.py  # All checks passed
-./.venv/bin/mypy src/polymarket_agent/strategies/ai_analyst.py src/polymarket_agent/orchestrator.py  # Success: no issues found in 2 source files
-```
-
-### Branch
-- Working branch: `main`
-
----
-
-## Session Entry — 2026-02-28 (Autotune: TA + News Parameter Support)
-
-### Problem
-- The autotune system uses a hardcoded list of known parameter names in `_build_tunable_params()`. New parameters from the TechnicalAnalyst strategy (`ema_fast_period`, `ema_slow_period`, `rsi_period`, `history_fidelity`) and the AIAnalyst strategy (`min_divergence`, `max_calls_per_hour`) were invisible to the tuner.
-- The entire `news` config section (`max_calls_per_hour`, `cache_ttl`, `max_results`) was also not exposed as tunable.
-- The LLM system prompt in `autotune.py` had no guidance about the new parameter types or their trade-offs.
-
-### Solution
-- **Extended `_build_tunable_params()`:** Added 7 new parameter checks in the per-strategy loop: `ema_fast_period` (3–15), `ema_slow_period` (10–50), `rsi_period` (5–30), `history_fidelity` (15–240), `min_divergence` (0.05–0.40), `max_calls_per_hour` (5–100). Added news config section with 3 params gated by `news.enabled`: `max_calls_per_hour` (10–200), `cache_ttl` (60–3600), `max_results` (1–10).
-- **Updated `_SYSTEM_PROMPT`:** Added "PARAMETER GUIDANCE" section explaining what each parameter group controls and how to reason about trade-offs (e.g. shorter EMA = more responsive but noisier, EMA fast must be < slow, higher `min_divergence` = fewer but higher-conviction trades).
-- **Updated README:** Added News Provider section, TechnicalAnalyst strategy docs, updated architecture diagram, config reference, project structure, roadmap, and tech stack.
-
-### Edits
-- `src/polymarket_agent/cli.py` — added 7 new strategy param checks + 3 news param checks (gated) in `_build_tunable_params()`
-- `src/polymarket_agent/autotune.py` — added "PARAMETER GUIDANCE" section to `_SYSTEM_PROMPT`
-- `tests/test_evaluate.py` — added 5 new tests: `test_build_tunable_params_includes_technical_analyst_params`, `test_build_tunable_params_includes_ai_analyst_params`, `test_build_tunable_params_includes_news_params_when_enabled`, `test_build_tunable_params_no_news_params_when_disabled`
-- `README.md` — added TechnicalAnalyst strategy, News Provider section, updated architecture diagram/description, config reference, project structure, roadmap, tech stack
-
-### NOT Changed
-- No changes to `scripts/autotune.sh` — it calls CLI commands which now automatically include the new parameters.
-- No changes to `autotune.py` validation logic — existing min/max clamping handles new params.
-- No changes to strategy logic, execution layer, or DB schema.
-
-### Verification
-```bash
-uv run pytest tests/test_evaluate.py tests/test_autotune.py -v   # 38 passed
-uv run pytest tests/ -q                                           # 390 passed
-ruff check src/                                                    # All checks passed
-uv run mypy src/                                                   # Success: no issues found in 43 source files
-```
-
-### Branch
-- Working branch: `main`
-
----
-
-## Session Entry — 2026-02-28 (Review Follow-Up: AI Analyst News Prompt Sanitization)
-
-### Problem
-- Reviewed the newest TA+news enhancement and found that news headline text was inserted into AIAnalyst prompts without sanitization.
-- External headline strings could include control characters (or other noisy text) and bypass the existing `_sanitize_text()` safeguards used for market question/description.
-
-### Solution
-- **TDD regression first:** Added a failing test that injects control characters into a news headline and verifies they do not appear in the final LLM prompt.
-- **Minimal hardening fix:** Updated AIAnalyst news prompt formatting to sanitize `title` and `published` fields before interpolation.
-- **Scoped limits for clarity:** Added dedicated max-length constants for news title/date prompt fields.
-
-### Edits
-- `src/polymarket_agent/strategies/ai_analyst.py` — sanitize news title/date in `_format_news_summary()` and add `_MAX_NEWS_TITLE_LEN` / `_MAX_NEWS_PUBLISHED_LEN`
-- `tests/test_ai_analyst.py` — added `test_prompt_sanitizes_news_titles`
-- `HANDOFF.md` — added this review follow-up entry; removed oldest session entry to keep last 10 entries
-
-### NOT Changed
-- No changes to technical indicator computations, TechnicalAnalyst signal logic, or news provider selection/rate-limiting.
-- No changes to orchestrator strategy wiring or DB schema.
-
-### Verification
-```bash
-uv run python -m pytest tests/test_ai_analyst.py::test_prompt_sanitizes_news_titles -q                               # failed first, then passed after fix
-uv run python -m pytest tests/test_ai_analyst.py tests/test_news_provider.py tests/test_technical_analyst.py tests/test_indicators.py -q  # 65 passed
-ruff check src/polymarket_agent/strategies/ai_analyst.py tests/test_ai_analyst.py                                     # All checks passed
-./.venv/bin/mypy src/polymarket_agent/strategies/ai_analyst.py                                                        # Success: no issues found in 1 source file
-```
-
-### Branch
-- Working branch: `main`
-
----
-
 ## Project Summary
 
 **Polymarket Agent** is a Python auto-trading pipeline for Polymarket prediction markets. It wraps the official `polymarket` CLI (v0.1.4, installed via Homebrew) into a structured system with pluggable trading strategies, paper/live execution, and MCP server integration for AI agents.
 
 ## Current State: Phase 4 COMPLETE + Strategy Research Improvements
 
-- 440 tests passing, ruff lint clean, mypy strict clean
+- 447 tests passing, ruff lint clean, mypy strict clean
 - All 4 strategies implemented: SignalTrader, MarketMaker, Arbitrageur, AIAnalyst
 - Signal aggregation integrated (groups by market+token+side, unique strategy consensus)
 - MCP server with 14 tools: search_markets, get_market_detail, get_price_history, get_leaderboard, get_portfolio, get_signals, refresh_signals, place_trade, analyze_market, get_event, get_price, get_spread, get_volume, get_positions
@@ -766,13 +728,15 @@ See `docs/plans/2026-02-26-polymarket-agent-phase3.md` for detailed plan with 6 
 - `docs/plans/2026-02-27-exit-manager-design.md` — Exit manager design document
 - `docs/plans/2026-02-27-exit-manager-plan.md` — Exit manager implementation plan
 - `docs/plans/2026-02-28-focus-trading.md` — Focus trading + research command design
-- `docs/plans/2026-03-03-strategy-research-improvements.md` — Strategy research improvements (Platt scaling, MACD, regime detection, aggregation blending, trailing stop)
+- `docs/plans/2026-03-03-strategy-research-improvements.md` — Strategy research improvements (Phases 1–3 implemented, Phases 4–8 planned)
+- `docs/plans/2026-03-03-paper-trading-test-plan-design.md` — Paper-trading A/B test plan design
+- `docs/plans/2026-03-03-paper-trading-test-plan.md` — Paper-trading test plan implementation
 
 ## Verification Commands
 
 ```bash
 # Everything should pass
-uv run pytest tests/ -v           # 440 tests passing
+uv run pytest tests/ -v           # 447 tests passing
 uv run ruff check src/            # All checks passed
 uv run mypy src/                  # Success: no issues found in 35 source files
 uv run polymarket-agent tick      # Fetches live data, paper trades (focus-filtered)

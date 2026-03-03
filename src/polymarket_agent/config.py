@@ -22,6 +22,8 @@ class AggregationConfig(BaseModel):
 
     min_confidence: float = 0.5
     min_strategies: int = 1
+    conflict_resolution: bool = True
+    blend_confidence: bool = True
 
 
 class ConditionalOrderConfig(BaseModel):

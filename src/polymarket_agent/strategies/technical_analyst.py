@@ -42,6 +42,8 @@ class TechnicalAnalyst(Strategy):
         self._history_interval: str = _DEFAULT_HISTORY_INTERVAL
         self._history_fidelity: int = _DEFAULT_HISTORY_FIDELITY
         self._order_size: float = _DEFAULT_ORDER_SIZE
+        self._macd_enabled: bool = True
+        self._regime_adaptive: bool = True
 
     def configure(self, config: dict[str, Any]) -> None:
         self._ema_fast_period = int(config.get("ema_fast_period", _DEFAULT_EMA_FAST))
@@ -50,6 +52,8 @@ class TechnicalAnalyst(Strategy):
         self._history_interval = str(config.get("history_interval", _DEFAULT_HISTORY_INTERVAL))
         self._history_fidelity = int(config.get("history_fidelity", _DEFAULT_HISTORY_FIDELITY))
         self._order_size = float(config.get("order_size", _DEFAULT_ORDER_SIZE))
+        self._macd_enabled = bool(config.get("macd_enabled", self._macd_enabled))
+        self._regime_adaptive = bool(config.get("regime_adaptive", self._regime_adaptive))
 
     def analyze(self, markets: list[Market], data: DataProvider) -> list[Signal]:
         signals: list[Signal] = []
@@ -124,17 +128,19 @@ class TechnicalAnalyst(Strategy):
             return "sell"
         return None
 
-    @staticmethod
-    def _compute_confidence(ctx: TechnicalContext, side: str) -> float:
+    def _compute_confidence(self, ctx: TechnicalContext, side: str) -> float:
         """Regime-adaptive weighted confidence from indicator strength."""
         # Determine regime-based weights
-        regime = ctx.regime.regime if ctx.regime else "transitional"
-        if regime == "trending":
-            w_ema, w_rsi, w_squeeze, w_macd = 0.45, 0.10, 0.15, 0.30
-        elif regime == "ranging":
-            w_ema, w_rsi, w_squeeze, w_macd = 0.15, 0.40, 0.25, 0.20
+        if self._regime_adaptive:
+            regime = ctx.regime.regime if ctx.regime else "transitional"
+            if regime == "trending":
+                w_ema, w_rsi, w_squeeze, w_macd = 0.45, 0.10, 0.15, 0.30
+            elif regime == "ranging":
+                w_ema, w_rsi, w_squeeze, w_macd = 0.15, 0.40, 0.25, 0.20
+            else:
+                w_ema, w_rsi, w_squeeze, w_macd = 0.30, 0.25, 0.20, 0.25
         else:
-            w_ema, w_rsi, w_squeeze, w_macd = 0.30, 0.25, 0.20, 0.25
+            w_ema, w_rsi, w_squeeze, w_macd = 0.40, 0.30, 0.30, 0.0
 
         # EMA divergence component
         ema_diff = abs(ctx.ema_fast.value - ctx.ema_slow.value)
@@ -163,7 +169,7 @@ class TechnicalAnalyst(Strategy):
 
         # MACD component
         macd_score = 0.0
-        if ctx.macd is not None:
+        if self._macd_enabled and ctx.macd is not None:
             histogram_threshold = 0.005
             macd_score = min(abs(ctx.macd.histogram) / histogram_threshold, 1.0)
             # Boost if MACD crossover confirms the side
@@ -180,8 +186,7 @@ class TechnicalAnalyst(Strategy):
 
         return ema_score * w_ema + rsi_score * w_rsi + squeeze_score * w_squeeze + macd_score * w_macd
 
-    @staticmethod
-    def _build_reason(ctx: TechnicalContext, side: str) -> str:
+    def _build_reason(self, ctx: TechnicalContext, side: str) -> str:
         parts = [
             f"ema_cross={ctx.ema_crossover}",
             f"rsi={ctx.rsi.rsi:.1f}",
@@ -190,8 +195,8 @@ class TechnicalAnalyst(Strategy):
         ]
         if ctx.squeeze.squeeze_releasing:
             parts.append("squeeze_release")
-        if ctx.macd is not None:
+        if self._macd_enabled and ctx.macd is not None:
             parts.append(f"macd={ctx.macd.crossover}")
-        if ctx.regime is not None:
+        if self._regime_adaptive and ctx.regime is not None:
             parts.append(f"regime={ctx.regime.regime}")
         return f"TA {side}: " + ", ".join(parts)

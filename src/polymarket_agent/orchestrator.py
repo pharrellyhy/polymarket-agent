@@ -117,6 +117,8 @@ class Orchestrator:
             raw_signals,
             min_confidence=self._config.aggregation.min_confidence,
             min_strategies=self._config.aggregation.min_strategies,
+            conflict_resolution=self._config.aggregation.conflict_resolution,
+            blend_confidence=self._config.aggregation.blend_confidence,
         )
         self._cache_signals(signals)
         logger.info("Aggregated to %d signals", len(signals))
@@ -230,6 +232,8 @@ class Orchestrator:
             raw_signals,
             min_confidence=self._config.aggregation.min_confidence,
             min_strategies=self._config.aggregation.min_strategies,
+            conflict_resolution=self._config.aggregation.conflict_resolution,
+            blend_confidence=self._config.aggregation.blend_confidence,
         )
         self._cache_signals(signals)
         return signals

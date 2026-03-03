@@ -276,6 +276,8 @@ def test_signal_contains_reason_with_indicators() -> None:
     assert "ema_cross=" in reason
     assert "rsi=" in reason
     assert "trend=" in reason
+    assert "macd=" in reason
+    assert "regime=" in reason
 
 
 def test_confidence_between_zero_and_one() -> None:
@@ -317,3 +319,49 @@ def test_confidence_between_zero_and_one() -> None:
     signals = strategy.analyze([_make_market("1", yes_price=0.5)], data)
     for signal in signals:
         assert 0.0 <= signal.confidence <= 1.0
+
+
+def test_macd_disabled_zeroes_macd_weight() -> None:
+    """When macd_enabled=False, MACD component has zero weight."""
+    prices = [
+        0.40, 0.38, 0.42, 0.39, 0.41, 0.37, 0.40, 0.38, 0.36, 0.39,
+        0.37, 0.35, 0.38, 0.36, 0.34, 0.37, 0.39, 0.42, 0.44, 0.46,
+        0.49, 0.48, 0.51, 0.53, 0.50, 0.54, 0.56, 0.55, 0.58, 0.60,
+    ]
+    data = _make_data_provider(prices)
+
+    with_macd = TechnicalAnalyst()
+    without_macd = TechnicalAnalyst()
+    without_macd.configure({"macd_enabled": False})
+
+    s_with = with_macd.analyze([_make_market("1", yes_price=0.5)], data)
+    s_without = without_macd.analyze([_make_market("1", yes_price=0.5)], data)
+
+    assert len(s_with) == 1
+    assert len(s_without) == 1
+    assert s_with[0].side == s_without[0].side == "buy"
+    assert "macd=" in s_with[0].reason
+    assert "macd=" not in s_without[0].reason
+
+
+def test_regime_adaptive_disabled_uses_fixed_weights() -> None:
+    """When regime_adaptive=False, fixed weights (0.4/0.3/0.3/0.0) are used."""
+    prices = [
+        0.40, 0.38, 0.42, 0.39, 0.41, 0.37, 0.40, 0.38, 0.36, 0.39,
+        0.37, 0.35, 0.38, 0.36, 0.34, 0.37, 0.39, 0.42, 0.44, 0.46,
+        0.49, 0.48, 0.51, 0.53, 0.50, 0.54, 0.56, 0.55, 0.58, 0.60,
+    ]
+    data = _make_data_provider(prices)
+
+    adaptive = TechnicalAnalyst()
+    fixed = TechnicalAnalyst()
+    fixed.configure({"regime_adaptive": False})
+
+    s_adaptive = adaptive.analyze([_make_market("1", yes_price=0.5)], data)
+    s_fixed = fixed.analyze([_make_market("1", yes_price=0.5)], data)
+
+    assert len(s_adaptive) == 1
+    assert len(s_fixed) == 1
+    assert s_adaptive[0].side == s_fixed[0].side == "buy"
+    assert "regime=" in s_adaptive[0].reason
+    assert "regime=" not in s_fixed[0].reason

@@ -98,6 +98,8 @@ class AIAnalyst(Strategy):
         self._keyword_spike_enabled: bool = False
         self._volatility_enabled: bool = True
         self._structured_prompt: bool = False
+        self._platt_scaling: bool = True
+        self._sigmoid_confidence: bool = True
         self._keyword_tracker: KeywordTracker = KeywordTracker()
         self._init_client()
 
@@ -158,6 +160,8 @@ class AIAnalyst(Strategy):
         self._keyword_spike_enabled = bool(config.get("keyword_spike_enabled", self._keyword_spike_enabled))
         self._volatility_enabled = bool(config.get("volatility_enabled", self._volatility_enabled))
         self._structured_prompt = bool(config.get("structured_prompt", self._structured_prompt))
+        self._platt_scaling = bool(config.get("platt_scaling", self._platt_scaling))
+        self._sigmoid_confidence = bool(config.get("sigmoid_confidence", self._sigmoid_confidence))
 
         raw_provider = config.get("provider", self._provider)
         new_provider = str(raw_provider).strip().lower() if raw_provider is not None else self._provider
@@ -477,7 +481,8 @@ class AIAnalyst(Strategy):
                 logger.warning("Could not parse probability from AI response: %s", text[:200])
                 return None
             estimate = float(matches[-1])
-            estimate = self._extremize(estimate)
+            if self._platt_scaling:
+                estimate = self._extremize(estimate)
         except Exception:
             logger.exception("AI analyst call failed for market %s", market.id)
             return None
@@ -494,7 +499,10 @@ class AIAnalyst(Strategy):
         side: Literal["buy", "sell"] = "buy" if divergence > 0 else "sell"
 
         # Sigmoid confidence: small divergences (<5%) → ~0, 15% → 0.5, 25%+ → ~1.0
-        confidence = 1.0 / (1.0 + math.exp(-20.0 * (abs(divergence) - 0.15)))
+        if self._sigmoid_confidence:
+            confidence = 1.0 / (1.0 + math.exp(-20.0 * (abs(divergence) - 0.15)))
+        else:
+            confidence = min(abs(divergence) / 0.3, 1.0)
 
         return Signal(
             strategy=self.name,

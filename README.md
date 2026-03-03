@@ -9,7 +9,7 @@ Agent-friendly auto-trading pipeline for Polymarket prediction markets.
 
 - **Typed Python API** — wraps the Polymarket CLI into Pydantic v2 models (Market, Event, OrderBook, Price)
 - **Pluggable strategy engine** — SignalTrader, MarketMaker, Arbitrageur, TechnicalAnalyst, and AIAnalyst (Anthropic/OpenAI) modules
-- **Technical analysis** — EMA crossover, RSI/Stochastic RSI, Bollinger Band squeeze detection from price history
+- **Technical analysis** — EMA crossover, RSI/Stochastic RSI, Bollinger Band squeeze, MACD (6/13/5), divergence detection, ATR-adaptive RSI thresholds, and market regime classification from price history
 - **News intelligence** — Google News RSS (free) or Tavily search for real-world context, with TTL caching and rate limiting
 - **Whale tracking** — follow top leaderboard traders' moves via Gamma API with rank-based confidence scaling
 - **Cross-platform arbitrage** — fuzzy-match Kalshi and Metaculus markets to Polymarket, trade on fee-adjusted price divergence
@@ -26,7 +26,7 @@ Agent-friendly auto-trading pipeline for Polymarket prediction markets.
 - **CLI interface** — `run`, `tick`, `status`, `report`, `evaluate`, `autotune`, `backtest`, `dashboard`, `mcp` commands
 - **TTL cache** — in-memory per-key cache with configurable expiration on market data
 - **YAML configuration** — mode selection, strategy params, risk limits, and order management in `config.yaml`
-- **Signal aggregation** — deduplication, confidence filtering, and cross-strategy consensus
+- **Signal aggregation** — deduplication, conflict resolution, confidence blending, and cross-strategy consensus
 
 ## Architecture
 
@@ -166,7 +166,7 @@ strategies:
 
 When the sum of outcome prices deviates from 1.0 beyond tolerance, buys the underpriced side (if sum < 1.0) or sells the overpriced side (if sum > 1.0). Confidence scales with deviation magnitude.
 
-**TechnicalAnalyst** — rule-based signals from price history indicators (EMA crossover, RSI, Bollinger squeeze).
+**TechnicalAnalyst** — rule-based signals from price history indicators (EMA crossover, RSI, Bollinger squeeze, MACD, regime detection).
 
 ```yaml
 strategies:
@@ -178,9 +178,11 @@ strategies:
     history_interval: "1w"   # price history lookback window
     history_fidelity: 60     # data points per interval
     order_size: 25.0         # USDC per trade
+    macd_enabled: true       # enable MACD (6/13/5) scoring component
+    regime_adaptive: true    # adapt confidence weights to market regime
 ```
 
-Fetches price history for each market and computes EMA crossover, RSI (with Stochastic RSI), and Bollinger Band squeeze indicators. Generates buy signals on bullish EMA crossover with RSI not overbought and squeeze confirmation; sell signals on bearish crossover with RSI not oversold. Confidence is a weighted blend: EMA divergence (40%), RSI extremity (30%), squeeze confirmation (30%). Skips markets with fewer than 21 data points or prices near 0 or 1.
+Fetches price history for each market and computes EMA crossover, RSI (with Stochastic RSI), Bollinger Band squeeze, and MACD (6/13/5 — halved periods for prediction markets) indicators. Markets are classified into regimes (trending, ranging, transitional) using ATR-adaptive RSI thresholds, and confidence weights adjust accordingly: trending markets emphasize EMA (45%) and MACD (30%), ranging markets emphasize RSI (40%) and squeeze (25%), and transitional uses balanced weights. Generates buy signals on bullish EMA crossover with RSI not overbought and squeeze confirmation; sell signals on bearish crossover with RSI not oversold. Skips markets with fewer than 21 data points or prices near 0 or 1. Both MACD and regime-adaptive weights can be toggled off via config flags for A/B testing.
 
 **AIAnalyst** — uses an LLM to estimate market probabilities, enriched with technical analysis and news context.
 
@@ -197,13 +199,15 @@ strategies:
     # api_key_env: OPENAI_API_KEY          # env var name for API key
 ```
 
-Sends each market's question and description to the configured LLM provider, parses a probability from the response. If the estimate diverges from the market price by more than `min_divergence`, generates a buy or sell signal. The prompt is enriched with optional context when available:
+Sends each market's question and description to the configured LLM provider, parses a probability from the response. The raw LLM probability is calibrated via Platt scaling (`_extremize()` with α=√3), which pushes confident estimates toward 0/1 and uncertain ones toward 0.5. Confidence is computed using a sigmoid mapping centered at 15% divergence — this produces sharp transitions that better separate actionable signals from noise. If the calibrated estimate diverges from the market price by more than `min_divergence`, generates a buy or sell signal. The prompt is enriched with optional context when available:
 
 - **Technical analysis** — price trend, EMA crossover direction, RSI reading, and volatility state (computed from price history)
 - **Recent news** — up to 5 headlines relevant to the market question (fetched via the configured news provider)
 - **Volatility analysis** — composite anomaly score from rate-of-change, acceleration, volume spikes, and Bollinger Band width percentile (`volatility_enabled: true`)
 - **Sentiment analysis** — LLM-scored news headline sentiment: bullish, bearish, or neutral with a -1 to 1 score (`sentiment_enabled: true`)
 - **Keyword spikes** — Google RSS frequency tracking across 1h/6h/24h windows, flagged when mentions exceed 3x baseline (`keyword_spike_enabled: true`)
+
+Both Platt scaling and sigmoid confidence can be toggled off via config flags (`platt_scaling`, `sigmoid_confidence`) for A/B testing — when disabled, the strategy uses the raw LLM probability and a linear confidence formula.
 
 All sections are optional — the strategy gracefully degrades if any data source is unavailable. Supports both Anthropic (default) and OpenAI-compatible providers, including local models served via Ollama or vLLM. Requires the appropriate API key (`ANTHROPIC_API_KEY` or `OPENAI_API_KEY`). Gracefully disabled when the key is not set.
 
@@ -243,11 +247,13 @@ Fetches active markets from Kalshi and Metaculus, then fuzzy-matches their quest
 
 ```yaml
 aggregation:
-  min_confidence: 0.3    # drop signals below this threshold
-  min_strategies: 2      # require N strategies to agree on a market (e.g. AI + Technical)
+  min_confidence: 0.3        # drop signals below this threshold
+  min_strategies: 2          # require N strategies to agree on a market (e.g. AI + Technical)
+  conflict_resolution: true  # suppress signals where strategies disagree on side
+  blend_confidence: true     # average confidence across agreeing strategies
 ```
 
-Signals are deduplicated per market, filtered by confidence, and optionally require cross-strategy consensus. With `min_strategies: 2`, a trade only executes when multiple strategies independently agree (e.g. both AIAnalyst and TechnicalAnalyst signal the same direction).
+Signals are deduplicated per market, filtered by confidence, and optionally require cross-strategy consensus. With `min_strategies: 2`, a trade only executes when multiple strategies independently agree (e.g. both AIAnalyst and TechnicalAnalyst signal the same direction). When `conflict_resolution` is enabled, signals where strategies disagree on direction (buy vs sell for the same market+token) are suppressed entirely. When `blend_confidence` is enabled, confidence is averaged across agreeing strategies rather than using winner-takes-all (max). Both flags can be toggled for A/B testing.
 
 ### Risk Management
 
@@ -578,6 +584,8 @@ See `deploy/env.example` for all available environment variables.
 | `ANTHROPIC_API_KEY` | API key for AIAnalyst / autotune (Anthropic provider) | AI features only |
 | `OPENAI_API_KEY` | API key for AIAnalyst / autotune (OpenAI provider) | OpenAI provider only |
 | `TAVILY_API_KEY` | API key for Tavily news provider | Tavily news only |
+| `KALSHI_API_KEY` | API key for Kalshi price data | Cross-platform arb only |
+| `METACULUS_API_KEY` | API key for Metaculus price data | Cross-platform arb only |
 
 See [`deploy/env.example`](deploy/env.example) for all available variables.
 
@@ -615,6 +623,8 @@ strategies:
     volatility_enabled: true     # inject volatility anomaly analysis into prompt
     sentiment_enabled: false     # inject LLM-scored news sentiment into prompt
     keyword_spike_enabled: false # inject Google RSS keyword spike detection into prompt
+    platt_scaling: true          # Platt scaling (α=√3) for LLM probability calibration
+    sigmoid_confidence: true     # sigmoid confidence mapping (vs linear)
   technical_analyst:
     enabled: true
     ema_fast_period: 8
@@ -623,6 +633,8 @@ strategies:
     history_interval: "1w"
     history_fidelity: 60
     order_size: 25.0
+    macd_enabled: true           # MACD (6/13/5) scoring component
+    regime_adaptive: true        # regime-adaptive confidence weights
   whale_follower:
     enabled: false
     top_n: 10
@@ -643,6 +655,8 @@ strategies:
 aggregation:
   min_confidence: 0.3
   min_strategies: 2
+  conflict_resolution: true  # suppress conflicting signals (opposite sides)
+  blend_confidence: true     # average confidence across agreeing strategies
 
 risk:
   max_position_size: 100.0
@@ -685,8 +699,15 @@ monitoring:
 ## Project Structure
 
 ```
+configs/test/
+├── baseline.yaml                  # Pre-Phase-1 baseline (all enhancements disabled)
+├── phase1.yaml                    # Phase 1: Platt scaling + sigmoid confidence + fractional Kelly
+├── phase2.yaml                    # Phase 2: + MACD + regime-adaptive weights
+└── phase3.yaml                    # Phase 3: + conflict resolution + blending + trailing stop
+
 scripts/
 ├── autotune.sh                    # Auto-tune cron script (evaluate → Claude Code → config edit)
+├── compare_test_runs.py           # A/B paper-trading comparison (reads SQLite DBs, prints metrics table)
 └── com.polymarket-agent.autotune.plist  # macOS launchd schedule (every 6h)
 
 src/polymarket_agent/
@@ -718,12 +739,13 @@ src/polymarket_agent/
 │   ├── market_maker.py     # Bid/ask quoting around midpoint
 │   ├── arbitrageur.py      # Price-sum deviation strategy
 │   ├── ai_analyst.py       # LLM-based probability strategy with TA + news + volatility + sentiment enrichment
-│   ├── technical_analyst.py # Rule-based TA strategy (EMA, RSI, squeeze)
+│   ├── technical_analyst.py # Rule-based TA strategy (EMA, RSI, squeeze, MACD, regime detection)
 │   ├── whale_follower.py   # Whale following strategy (Gamma API)
 │   ├── cross_platform_arb.py # Cross-platform arbitrage (Kalshi/Metaculus)
 │   ├── volatility.py       # Volatility anomaly computation (AIAnalyst enrichment)
-│   ├── indicators.py       # Technical indicator computations (EMA, RSI, Bollinger)
-│   └── aggregator.py       # Signal dedup/filter/consensus
+│   ├── indicators.py       # Technical indicator computations (EMA, RSI, Bollinger, MACD, ATR, StochRSI)
+│   ├── exit_manager.py     # Position exit management (profit target, stop loss, trailing stop)
+│   └── aggregator.py       # Signal dedup/filter/consensus with conflict resolution + blending
 ├── backtest/
 │   ├── historical.py       # CSV-based historical data provider
 │   ├── engine.py           # Backtest engine (replay + execute)
@@ -774,6 +796,7 @@ mypy src/
 | **9. Auto-Tuning** | Done | Config hot-reload, evaluate command, multi-provider LLM-driven parameter tuning |
 | **10. TA + News** | Done | Technical indicators (EMA, RSI, squeeze), news headlines, TechnicalAnalyst strategy, AI prompt enrichment |
 | **11. Strategy Enhancement** | Done | Whale tracking, cross-platform arb, volatility anomaly detection, sentiment analysis |
+| **12. A/B Testing** | Done | Config toggle flags for Phase 1-3 features, 4 test profiles, paper-trading comparison script |
 
 ## Tech Stack
 

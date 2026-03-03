@@ -106,3 +106,28 @@ def test_min_strategies_counts_unique_strategies() -> None:
     result = aggregate_signals(signals, min_confidence=0.0, min_strategies=2)
 
     assert result == []
+
+
+def test_conflict_resolution_disabled_keeps_both_sides() -> None:
+    """When conflict_resolution=False, opposing signals are NOT suppressed."""
+    signals = [
+        _signal("A", "1", "buy", confidence=0.8),
+        _signal("B", "1", "sell", confidence=0.7),
+    ]
+    result = aggregate_signals(
+        signals, min_confidence=0.0, min_strategies=1, conflict_resolution=False
+    )
+    assert len(result) == 2
+
+
+def test_blend_confidence_disabled_uses_max() -> None:
+    """When blend_confidence=False, winner-takes-all confidence is used."""
+    signals = [
+        _signal("A", "1", "buy", confidence=0.6),
+        _signal("B", "1", "buy", confidence=0.9),
+    ]
+    result = aggregate_signals(
+        signals, min_confidence=0.0, min_strategies=1, blend_confidence=False
+    )
+    assert len(result) == 1
+    assert result[0].confidence == 0.9

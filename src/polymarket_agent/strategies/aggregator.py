@@ -10,6 +10,8 @@ def aggregate_signals(
     *,
     min_confidence: float = 0.5,
     min_strategies: int = 1,
+    conflict_resolution: bool = True,
+    blend_confidence: bool = True,
 ) -> list[Signal]:
     """Aggregate signals from multiple strategies.
 
@@ -23,12 +25,13 @@ def aggregate_signals(
         return []
 
     # Conflict resolution: suppress signals where strategies disagree on side
-    market_token_sides: dict[tuple[str, str], set[str]] = {}
-    for signal in signals:
-        key = (signal.market_id, signal.token_id)
-        market_token_sides.setdefault(key, set()).add(signal.side)
-
-    conflicted = {key for key, sides in market_token_sides.items() if len(sides) > 1}
+    conflicted: set[tuple[str, str]] = set()
+    if conflict_resolution:
+        market_token_sides: dict[tuple[str, str], set[str]] = {}
+        for signal in signals:
+            key = (signal.market_id, signal.token_id)
+            market_token_sides.setdefault(key, set()).add(signal.side)
+        conflicted = {key for key, sides in market_token_sides.items() if len(sides) > 1}
 
     groups: dict[tuple[str, str, str], list[Signal]] = {}
     for signal in signals:
@@ -43,9 +46,10 @@ def aggregate_signals(
         if len(strategies) < min_strategies:
             continue
         # Confidence blending: use group average, attach to best-reason signal.
-        blended_confidence = sum(s.confidence for s in group) / len(group)
         best = max(group, key=lambda s: s.confidence)
-        best = replace(best, confidence=round(blended_confidence, 4))
+        if blend_confidence:
+            blended_confidence = sum(s.confidence for s in group) / len(group)
+            best = replace(best, confidence=round(blended_confidence, 4))
         if best.confidence >= min_confidence:
             result.append(best)
 

@@ -1,0 +1,89 @@
+# Phase 2: + MACD + regime-adaptive weights
+mode: paper
+starting_balance: 100.0
+poll_interval: 10
+strategies:
+  signal_trader:
+    enabled: false
+  market_maker:
+    enabled: false
+  arbitrageur:
+    enabled: false
+  ai_analyst:
+    enabled: true
+    model: qwen/qwen3.5-35b-a3b
+    max_calls_per_hour: 5000
+    min_divergence: 0.10
+    min_price: 0.05
+    order_size: 10.0
+    provider: openai
+    extra_params:
+      reasoning_budget: 0
+      enable_thinking: false
+    base_url: http://localhost:11567/v1
+    volatility_enabled: true
+    sentiment_enabled: true
+    keyword_spike_enabled: true
+    platt_scaling: true
+    sigmoid_confidence: true
+    structured_prompt: false
+  technical_analyst:
+    enabled: true
+    ema_fast_period: 8
+    ema_slow_period: 21
+    rsi_period: 14
+    history_interval: "1w"
+    history_fidelity: 60
+    order_size: 25.0
+    macd_enabled: true
+    regime_adaptive: true
+  whale_follower:
+    enabled: false
+  cross_platform_arb:
+    enabled: false
+aggregation:
+  min_confidence: 0.40
+  min_strategies: 2
+  conflict_resolution: false
+  blend_confidence: false
+risk:
+  max_position_size: 200.0
+  max_daily_loss: 500.0
+  max_open_orders: 30
+  reentry_cooldown_hours: 2
+conditional_orders:
+  enabled: true
+  default_stop_loss_pct: 0.15
+  default_take_profit_pct: 0.25
+  trailing_stop_enabled: false
+  trailing_stop_pct: 0.05
+position_sizing:
+  method: fractional_kelly
+  kelly_fraction: 0.25
+  max_bet_pct: 0.1
+exit_manager:
+  enabled: true
+  profit_target_pct: 0.15
+  stop_loss_pct: 0.15
+  trailing_stop_enabled: false
+  trailing_stop_pct: 0.05
+  signal_reversal: true
+  max_hold_hours: 24
+news:
+  enabled: true
+  provider: google_rss
+  api_key_env: TAVILY_API_KEY
+  max_calls_per_hour: 100
+  cache_ttl: 600
+  max_results: 5
+focus:
+  enabled: false
+  search_queries: []
+  max_brackets: 30
+monitoring:
+  structured_logging: false
+  log_file: logs/agent.log
+  alert_webhooks: []
+  snapshot_interval: 300
+  dashboard_host: 0.0.0.0
+  dashboard_port: 11648

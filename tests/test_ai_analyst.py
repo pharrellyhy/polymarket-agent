@@ -1,6 +1,7 @@
 """Tests for the AIAnalyst strategy."""
 
 import json
+import math
 from unittest.mock import MagicMock, patch
 
 from polymarket_agent.data.models import Market, PricePoint
@@ -56,6 +57,34 @@ def test_ai_analyst_no_signal_when_aligned() -> None:
     strategy = _make_analyst("0.52")
     signals = strategy.analyze([_make_market("1", yes_price=0.50)], MagicMock())
     assert len(signals) == 0
+
+
+def test_ai_analyst_platt_scaling_toggle_controls_extremization() -> None:
+    """platt_scaling=False should preserve the raw parsed estimate."""
+    with_scaling = _make_analyst("0.80", platt_scaling=True, sigmoid_confidence=False)
+    without_scaling = _make_analyst("0.80", platt_scaling=False, sigmoid_confidence=False)
+
+    signals_with = with_scaling.analyze([_make_market("1", yes_price=0.50)], MagicMock())
+    signals_without = without_scaling.analyze([_make_market("1", yes_price=0.50)], MagicMock())
+
+    assert len(signals_with) == 1
+    assert len(signals_without) == 1
+    assert "ai_estimate=0.8000" in signals_without[0].reason
+    assert "ai_estimate=0.8000" not in signals_with[0].reason
+
+
+def test_ai_analyst_sigmoid_confidence_toggle_controls_mapping() -> None:
+    """sigmoid_confidence=False should use linear confidence mapping."""
+    market = _make_market("1", yes_price=0.50)
+    with_sigmoid = _make_analyst("0.70", platt_scaling=False, sigmoid_confidence=True)
+    with_linear = _make_analyst("0.70", platt_scaling=False, sigmoid_confidence=False)
+
+    signal_sigmoid = with_sigmoid.analyze([market], MagicMock())[0]
+    signal_linear = with_linear.analyze([market], MagicMock())[0]
+
+    expected_sigmoid = round(1.0 / (1.0 + math.exp(-20.0 * (0.20 - 0.15))), 4)
+    assert signal_sigmoid.confidence == expected_sigmoid
+    assert signal_linear.confidence == 0.6667
 
 
 def test_ai_analyst_graceful_without_api_key() -> None:
