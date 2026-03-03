@@ -11,6 +11,7 @@ recent news headlines, volatility anomaly detection, and sentiment analysis.
 from __future__ import annotations
 
 import logging
+import math
 import os
 import re
 import time
@@ -96,6 +97,7 @@ class AIAnalyst(Strategy):
         self._sentiment_enabled: bool = False
         self._keyword_spike_enabled: bool = False
         self._volatility_enabled: bool = True
+        self._structured_prompt: bool = False
         self._keyword_tracker: KeywordTracker = KeywordTracker()
         self._init_client()
 
@@ -155,6 +157,7 @@ class AIAnalyst(Strategy):
         self._sentiment_enabled = bool(config.get("sentiment_enabled", self._sentiment_enabled))
         self._keyword_spike_enabled = bool(config.get("keyword_spike_enabled", self._keyword_spike_enabled))
         self._volatility_enabled = bool(config.get("volatility_enabled", self._volatility_enabled))
+        self._structured_prompt = bool(config.get("structured_prompt", self._structured_prompt))
 
         raw_provider = config.get("provider", self._provider)
         new_provider = str(raw_provider).strip().lower() if raw_provider is not None else self._provider
@@ -213,15 +216,18 @@ class AIAnalyst(Strategy):
             return str(response.content[0].text).strip()
 
         # OpenAI-compatible provider
+        max_tokens = 1024 if self._structured_prompt else 128
+        system_content = (
+            "You are a prediction market analyst. Follow the user's instructions exactly."
+            if self._structured_prompt
+            else "Respond with ONLY a single decimal number between 0.0 and 1.0. No other text."
+        )
         kwargs: dict[str, Any] = {
             "model": self._model,
-            "max_tokens": 128,
+            "max_tokens": max_tokens,
             "temperature": 0,
             "messages": [
-                {
-                    "role": "system",
-                    "content": "Respond with ONLY a single decimal number between 0.0 and 1.0. No other text.",
-                },
+                {"role": "system", "content": system_content},
                 {"role": "user", "content": prompt},
             ],
         }
@@ -232,6 +238,18 @@ class AIAnalyst(Strategy):
         response = self._client.chat.completions.create(**kwargs)
         content = response.choices[0].message.content
         return content.strip() if content else ""
+
+    @staticmethod
+    def _extremize(p: float, alpha: float = math.sqrt(3)) -> float:
+        """Apply Platt scaling to correct LLM hedging bias.
+
+        Shifts moderate probabilities toward 0 or 1 using log-odds rescaling.
+        Default α=√3 per AIA Forecaster paper: 0.6→0.74, 0.8→0.89.
+        """
+        if p <= 0.0 or p >= 1.0:
+            return p
+        log_odds = math.log(p / (1.0 - p))
+        return 1.0 / (1.0 + math.exp(-alpha * log_odds))
 
     # ------------------------------------------------------------------
     # Technical analysis context
@@ -423,21 +441,43 @@ class AIAnalyst(Strategy):
         if keyword_spikes:
             prompt += f"\n--- KEYWORD SPIKES ---\n{format_keyword_spikes(keyword_spikes)}\n"
 
-        prompt += (
-            "--- END MARKET DATA ---\n"
-            f"\nCurrent market price: {yes_price:.2f}\n"
-            "Respond with ONLY a single decimal number between 0.0 and 1.0."
-        )
+        prompt += f"--- END MARKET DATA ---\n\nCurrent market price: {yes_price:.2f}\n"
+
+        if self._structured_prompt:
+            prompt += (
+                "Think step by step:\n"
+                '1. COMPREHENSION: Rephrase what "resolves Yes" means in concrete terms.\n'
+                "2. BASE RATE: What is the historical base rate for similar events?\n"
+                "3. ARGUMENTS FOR YES: List 2-3 key reasons this resolves Yes.\n"
+                "4. ARGUMENTS FOR NO: List 2-3 key reasons this resolves No.\n"
+                "5. WEIGHTING: Which arguments are strongest and why?\n"
+                "6. INITIAL ESTIMATE: Your first probability estimate (0.0-1.0).\n"
+                "7. CALIBRATION CHECK: Are you over- or under-confident? Consider base rates.\n"
+                "8. FINAL PROBABILITY: [number between 0.0 and 1.0]\n"
+            )
+        else:
+            prompt += "Respond with ONLY a single decimal number between 0.0 and 1.0."
 
         try:
             text = self._call_llm(prompt)
-            # Use findall + take last match: thinking models (e.g. Qwen) emit
-            # reasoning text before the final numeric answer.
-            matches = re.findall(r"\b(0(?:\.\d+)?|1(?:\.0+)?)\b", text)
+
+            if self._structured_prompt:
+                # Try to extract from "FINAL PROBABILITY:" line first
+                fp_match = re.search(r"FINAL\s+PROBABILITY\s*:\s*(0(?:\.\d+)?|1(?:\.0+)?)", text)
+                if fp_match:
+                    matches = [fp_match.group(1)]
+                else:
+                    matches = re.findall(r"\b(0(?:\.\d+)?|1(?:\.0+)?)\b", text)
+            else:
+                # Use findall + take last match: thinking models (e.g. Qwen) emit
+                # reasoning text before the final numeric answer.
+                matches = re.findall(r"\b(0(?:\.\d+)?|1(?:\.0+)?)\b", text)
+
             if not matches:
                 logger.warning("Could not parse probability from AI response: %s", text[:200])
                 return None
             estimate = float(matches[-1])
+            estimate = self._extremize(estimate)
         except Exception:
             logger.exception("AI analyst call failed for market %s", market.id)
             return None
@@ -453,7 +493,8 @@ class AIAnalyst(Strategy):
         # Negative divergence → AI thinks Yes is overpriced → sell Yes token
         side: Literal["buy", "sell"] = "buy" if divergence > 0 else "sell"
 
-        confidence = min(abs(divergence) / 0.3, 1.0)
+        # Sigmoid confidence: small divergences (<5%) → ~0, 15% → 0.5, 25%+ → ~1.0
+        confidence = 1.0 / (1.0 + math.exp(-20.0 * (abs(divergence) - 0.15)))
 
         return Signal(
             strategy=self.name,

@@ -66,6 +66,8 @@ class ExitManagerConfig(BaseModel):
     enabled: bool = True
     profit_target_pct: float = 0.15
     stop_loss_pct: float = 0.12
+    trailing_stop_enabled: bool = False
+    trailing_stop_pct: float = 0.05
     signal_reversal: bool = True
     max_hold_hours: int = 24
 

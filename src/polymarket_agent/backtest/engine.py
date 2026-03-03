@@ -1,7 +1,5 @@
 """Backtest engine — replays historical data through strategies and execution."""
 
-from __future__ import annotations
-
 import logging
 import tempfile
 from dataclasses import asdict

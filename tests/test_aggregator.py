@@ -32,14 +32,26 @@ def test_deduplicates_same_market_same_side() -> None:
     ]
     result = aggregate_signals(signals, min_confidence=0.0, min_strategies=1)
     assert len(result) == 1
-    assert result[0].confidence == 0.9
-    assert result[0].strategy == "B"
+    # Blended confidence: (0.6 + 0.9) / 2 = 0.75
+    assert result[0].confidence == 0.75
+    assert result[0].strategy == "B"  # reason from best signal
 
 
-def test_keeps_different_sides() -> None:
+def test_conflicting_sides_suppressed() -> None:
+    """When strategies disagree on side for the same market+token, suppress both."""
     signals = [
         _signal("A", "1", "buy", confidence=0.8),
         _signal("B", "1", "sell", confidence=0.7),
+    ]
+    result = aggregate_signals(signals, min_confidence=0.0, min_strategies=1)
+    assert len(result) == 0
+
+
+def test_keeps_different_sides_different_tokens() -> None:
+    """Different tokens in the same market are not considered conflicting."""
+    signals = [
+        _signal("A", "1", "buy", confidence=0.8, token_id="yes-token"),
+        _signal("B", "1", "sell", confidence=0.7, token_id="no-token"),
     ]
     result = aggregate_signals(signals, min_confidence=0.0, min_strategies=1)
     assert len(result) == 2
@@ -64,6 +76,8 @@ def test_requires_min_strategies() -> None:
     result = aggregate_signals(signals, min_confidence=0.0, min_strategies=2)
     assert len(result) == 1
     assert result[0].market_id == "2"
+    # Blended confidence: (0.8 + 0.7) / 2 = 0.75
+    assert result[0].confidence == 0.75
 
 
 def test_empty_input() -> None:

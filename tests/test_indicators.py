@@ -3,6 +3,7 @@
 from polymarket_agent.data.models import PricePoint
 from polymarket_agent.strategies.indicators import (
     TechnicalContext,
+    adaptive_rsi_thresholds,
     analyze_market_technicals,
     compute_ema,
     compute_rsi,
@@ -117,6 +118,12 @@ def test_squeeze_momentum_direction() -> None:
     prices_down = [0.7 - 0.01 * i for i in range(30)]
     result_down = compute_squeeze(prices_down)
     assert result_down.momentum < 0
+
+
+def test_adaptive_rsi_thresholds_flat_volatility_is_neutral() -> None:
+    """Flat/duplicate ATR values should not be misclassified as low volatility."""
+    prices = [0.5] * 40
+    assert adaptive_rsi_thresholds(prices, period=14) == (70.0, 30.0)
 
 
 # ---------------------------------------------------------------------------

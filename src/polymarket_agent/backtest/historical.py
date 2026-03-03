@@ -8,8 +8,9 @@ import csv
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
-from polymarket_agent.data.models import Market, OrderBook, OrderBookLevel, PricePoint, Spread
+from polymarket_agent.data.models import Market, OrderBook, OrderBookLevel, PricePoint, Spread, Trader
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +95,14 @@ class HistoricalDataProvider:
             if step.token_id == token_id:
                 points.append(PricePoint(timestamp=step.timestamp, price=step.yes_price))
         return points
+
+    def get_leaderboard(self, *, period: str = "month") -> list[Trader]:
+        """Not available in backtesting — returns empty list."""
+        return []
+
+    def get_trader_trades(self, address: str, *, limit: int = 20) -> list[dict[str, Any]]:
+        """Not available in backtesting — returns empty list."""
+        return []
 
     # ------------------------------------------------------------------
     # Time cursor

@@ -30,8 +30,7 @@ class TechnicalAnalyst(Strategy):
     Signal logic:
     - **BUY**: bullish EMA crossover + RSI not overbought + squeeze confirmation
     - **SELL**: bearish EMA crossover + RSI not oversold + squeeze confirmation
-    - **Confidence**: weighted blend of EMA divergence (0.4), RSI extremity (0.3),
-      and squeeze confirmation (0.3)
+    - **Confidence**: regime-adaptive blend of EMA/RSI/squeeze/MACD components
     """
 
     name: str = "technical_analyst"
@@ -127,27 +126,59 @@ class TechnicalAnalyst(Strategy):
 
     @staticmethod
     def _compute_confidence(ctx: TechnicalContext, side: str) -> float:
-        """Weighted confidence from indicator strength."""
-        # EMA divergence component (0.4 weight)
+        """Regime-adaptive weighted confidence from indicator strength."""
+        # Determine regime-based weights
+        regime = ctx.regime.regime if ctx.regime else "transitional"
+        if regime == "trending":
+            w_ema, w_rsi, w_squeeze, w_macd = 0.45, 0.10, 0.15, 0.30
+        elif regime == "ranging":
+            w_ema, w_rsi, w_squeeze, w_macd = 0.15, 0.40, 0.25, 0.20
+        else:
+            w_ema, w_rsi, w_squeeze, w_macd = 0.30, 0.25, 0.20, 0.25
+
+        # EMA divergence component
         ema_diff = abs(ctx.ema_fast.value - ctx.ema_slow.value)
         ema_pct = ema_diff / ctx.ema_slow.value if ctx.ema_slow.value > 0 else 0.0
-        ema_score = min(ema_pct / 0.05, 1.0)  # normalize: 5% divergence = max
+        ema_score = min(ema_pct / 0.05, 1.0)
 
-        # RSI extremity component (0.3 weight)
+        # RSI extremity component
         if side == "buy":
             rsi_score = max(0.0, (50.0 - ctx.rsi.rsi) / 50.0)
         else:
             rsi_score = max(0.0, (ctx.rsi.rsi - 50.0) / 50.0)
 
-        # Squeeze component (0.3 weight)
-        squeeze_score = 0.5  # neutral baseline
+        # StochRSI timing boost
+        if side == "buy" and ctx.rsi.stoch_rsi < 0.2:
+            rsi_score = min(1.0, rsi_score + 0.2)
+        elif side == "sell" and ctx.rsi.stoch_rsi > 0.8:
+            rsi_score = min(1.0, rsi_score + 0.2)
+
+        # Squeeze component
+        squeeze_score = 0.5
         if ctx.squeeze.squeeze_releasing:
             if (side == "buy" and ctx.squeeze.momentum > 0) or (side == "sell" and ctx.squeeze.momentum < 0):
                 squeeze_score = 1.0
         elif ctx.squeeze.is_squeezing:
-            squeeze_score = 0.3  # compressed volatility — lower confidence
+            squeeze_score = 0.3
 
-        return ema_score * 0.4 + rsi_score * 0.3 + squeeze_score * 0.3
+        # MACD component
+        macd_score = 0.0
+        if ctx.macd is not None:
+            histogram_threshold = 0.005
+            macd_score = min(abs(ctx.macd.histogram) / histogram_threshold, 1.0)
+            # Boost if MACD crossover confirms the side
+            if (side == "buy" and ctx.macd.crossover == "bullish") or (
+                side == "sell" and ctx.macd.crossover == "bearish"
+            ):
+                macd_score = min(1.0, macd_score + 0.2)
+            # Boost if divergence confirms
+            if ctx.divergence:
+                if side == "buy" and ctx.divergence.macd_divergence == "bullish":
+                    macd_score = min(1.0, macd_score + 0.15)
+                elif side == "sell" and ctx.divergence.macd_divergence == "bearish":
+                    macd_score = min(1.0, macd_score + 0.15)
+
+        return ema_score * w_ema + rsi_score * w_rsi + squeeze_score * w_squeeze + macd_score * w_macd
 
     @staticmethod
     def _build_reason(ctx: TechnicalContext, side: str) -> str:
@@ -159,4 +190,8 @@ class TechnicalAnalyst(Strategy):
         ]
         if ctx.squeeze.squeeze_releasing:
             parts.append("squeeze_release")
+        if ctx.macd is not None:
+            parts.append(f"macd={ctx.macd.crossover}")
+        if ctx.regime is not None:
+            parts.append(f"regime={ctx.regime.regime}")
         return f"TA {side}: " + ", ".join(parts)

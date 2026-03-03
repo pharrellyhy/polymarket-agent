@@ -1,6 +1,131 @@
 # Polymarket Agent — Handoff Document
 
-Last updated: 2026-03-02
+Last updated: 2026-03-03
+
+---
+
+## Session Entry — 2026-03-03 (Code Review Follow-Up: Strategy Simplification Pass)
+
+### Problem
+- The newly added strategy-research code was functional, but review found a few cleanup opportunities:
+- `adaptive_rsi_thresholds()` used `list.index()` percentile ranking, which can misclassify duplicate ATR values as low-volatility.
+- `ExitManager` maintained trailing-stop high-water state even when trailing stops were disabled.
+- Minor clarity issues remained (wording mismatch in aggregator docs and stale confidence description in `TechnicalAnalyst` docstring).
+
+### Solution
+- Simplified and hardened indicator internals:
+- Replaced duplicate-sensitive ATR ranking logic with bisect-based midpoint ranking.
+- Added an empty-input guard in `_compute_ema_series()`.
+- Replaced MACD magic numbers with module constants used consistently by `compute_macd()` and divergence-series construction.
+- Simplified `ExitManager` trailing-stop state handling:
+- High-water marks are now tracked/cleaned only when `trailing_stop_enabled` is active.
+- Removed an unnecessary default argument from `_check_exit()` to make token context explicit.
+- Clarified docs/comments without behavior changes:
+- Updated aggregator wording from “weighted average” to “average” (matching implementation).
+- Updated `TechnicalAnalyst` class docstring to reflect regime-adaptive confidence.
+- Added targeted regression tests for the reviewed paths.
+
+### Edits
+- `src/polymarket_agent/strategies/indicators.py`
+  - Added duplicate-safe ATR percentile ranking (`bisect_left`/`bisect_right` midpoint).
+  - Added empty-input guard in `_compute_ema_series()`.
+  - Introduced `_MACD_*` constants and reused them in MACD/divergence paths.
+  - Removed redundant branch in MACD crossover previous-signal selection.
+- `src/polymarket_agent/strategies/exit_manager.py`
+  - Limited high-water mark tracking/cleanup to trailing-stop-enabled mode.
+  - Removed default `token_id` argument from `_check_exit()`.
+- `src/polymarket_agent/strategies/aggregator.py`
+  - Updated confidence blending comments/docstring wording for accuracy.
+- `src/polymarket_agent/strategies/technical_analyst.py`
+  - Updated confidence description in class docstring.
+- `tests/test_indicators.py`
+  - Added `test_adaptive_rsi_thresholds_flat_volatility_is_neutral`.
+- `tests/test_exit_manager.py`
+  - Added trailing-stop trigger test after pullback.
+  - Added test ensuring disabled trailing-stop mode does not track high-water marks.
+
+### NOT Changed
+- No changes to strategy/executor interfaces or config shape.
+- No DB/schema/orchestrator flow changes.
+- No dependency changes.
+
+### Verification
+```bash
+uv run pytest tests/test_indicators.py tests/test_exit_manager.py tests/test_technical_analyst.py tests/test_aggregator.py -q
+# 54 passed in 0.21s
+
+uv run ruff check src/polymarket_agent/strategies/indicators.py src/polymarket_agent/strategies/exit_manager.py src/polymarket_agent/strategies/aggregator.py src/polymarket_agent/strategies/technical_analyst.py tests/test_indicators.py tests/test_exit_manager.py
+# All checks passed!
+
+uv run mypy src/polymarket_agent/strategies/indicators.py src/polymarket_agent/strategies/exit_manager.py src/polymarket_agent/strategies/aggregator.py src/polymarket_agent/strategies/technical_analyst.py
+# Success: no issues found in 4 source files
+```
+
+### Branch
+- Working branch: `main`
+
+---
+
+## Session Entry — 2026-03-03 (Strategy Research Improvements: 3-Phase Implementation)
+
+### Problem
+- AIAnalyst LLM estimates were hedged toward 0.5 (known LLM calibration bias), producing weak divergence signals.
+- Confidence mapping was linear, giving too much confidence to small divergences and not enough to large ones.
+- TechnicalAnalyst used fixed indicator weights regardless of market regime (trending vs ranging).
+- MACD, divergence detection, ATR-based adaptive thresholds, and market regime classification were missing from the indicator toolkit.
+- Stochastic RSI was computed but never used.
+- Aggregator used winner-takes-all confidence (no blending) and allowed conflicting signals (opposite sides on same market+token) to pass through independently.
+- ExitManager had no trailing stop despite config keys being defined in `config.yaml`.
+- Position sizing was fixed instead of using the already-implemented fractional Kelly.
+
+### Solution
+**Phase 1 — Quick Wins:**
+- Added Platt scaling (`_extremize()`, α=√3) to AIAnalyst output to correct LLM hedging bias (0.6→0.74, 0.8→0.89).
+- Replaced linear confidence with sigmoid mapping: small divergences (<5%) → ~0, 15% → 0.5, 25%+ → ~1.0.
+- Enabled fractional Kelly positioning in config (fraction=0.25, max_bet_pct=0.10).
+
+**Phase 2 — Technical Indicators:**
+- Added MACD (6/13/5 periods) with crossover detection.
+- Added RSI/MACD divergence detection via swing-point analysis.
+- Added ATR approximation (close-only) with adaptive RSI thresholds (low/normal/high vol → 65/35, 70/30, 75/25).
+- Added market regime detection (trending/ranging/transitional from EMA slope + BB expansion).
+- Replaced fixed TechnicalAnalyst weights with regime-adaptive weights (e.g., trending: EMA=0.45, MACD=0.30; ranging: RSI=0.40).
+- Activated StochRSI as timing boost (+0.2 when confirming signal direction).
+
+**Phase 3 — Aggregation & Exit:**
+- Replaced winner-takes-all aggregation with confidence blending (group average).
+- Added conflict resolution: opposite sides on same (market_id, token_id) → suppress both.
+- Added trailing stop to ExitManager with high-water mark tracking, gated by `trailing_stop_enabled` config.
+- Wired `trailing_stop_enabled`/`trailing_stop_pct` from config.yaml into `ExitManagerConfig`.
+- Added structured scratchpad prompt for AIAnalyst (gated by `structured_prompt: false` — disabled by default for A/B testing).
+
+### Edits
+- `src/polymarket_agent/strategies/ai_analyst.py` — added `_extremize()`, sigmoid confidence, `_structured_prompt` config, scratchpad prompt template, updated regex parser for structured mode, adjusted OpenAI `max_tokens`
+- `src/polymarket_agent/strategies/indicators.py` — added `MACDResult`, `DivergenceResult`, `RegimeResult` models; added `compute_macd()`, `compute_atr()`, `adaptive_rsi_thresholds()`, `detect_divergence()`, `detect_regime()`, `_compute_ema_series()`; updated `TechnicalContext` with new optional fields; updated `analyze_market_technicals()` to compute all new indicators
+- `src/polymarket_agent/strategies/technical_analyst.py` — regime-adaptive weights in `_compute_confidence()`, MACD score component, StochRSI timing boost, updated `_build_reason()` with MACD/regime
+- `src/polymarket_agent/strategies/aggregator.py` — conflict resolution pass, confidence blending replacing winner-takes-all
+- `src/polymarket_agent/strategies/exit_manager.py` — trailing stop rule with high-water mark tracking, updated rule priority numbering
+- `src/polymarket_agent/config.py` — added `trailing_stop_enabled`, `trailing_stop_pct` to `ExitManagerConfig`
+- `config.yaml` — changed `position_sizing.method` from `fixed` to `fractional_kelly`
+- `tests/test_aggregator.py` — updated for blended confidence, added conflict resolution test
+- `tests/test_integration.py` — relaxed signal count assertions for conflict suppression
+- `tests/test_technical_analyst.py` — updated bearish test data for adaptive RSI thresholds
+- `docs/plans/2026-03-03-strategy-research-improvements.md` — **NEW** implementation plan document
+
+### NOT Changed
+- No changes to existing strategy interfaces or ABCs.
+- No changes to execution layer, MCP server, or dashboard.
+- No DB schema changes.
+- No new dependencies.
+- Position sizing code unchanged (fractional Kelly was already implemented, only config toggled).
+
+### Verification
+```bash
+.venv/bin/python -m pytest tests/ -q  # 440 passed in 12.34s
+```
+
+### Branch
+- Working branch: `main`
 
 ---
 
@@ -468,65 +593,13 @@ ruff check src/polymarket_agent/strategies/ai_analyst.py tests/test_ai_analyst.p
 
 ---
 
-## Session Entry — 2026-02-28 (Technical Analysis + News Intelligence Enhancement)
-
-### Problem
-- The AI Analyst strategy received only market question, description, and current price when asking the LLM for probability estimates — no quantitative price history context and no real-world news context.
-- `DataProvider.get_price_history()` existed but no strategy used it.
-- No mechanism to fetch recent news headlines relevant to each market.
-
-### Solution
-- **Technical indicators module (Step 1):** New `strategies/indicators.py` with pure-computation EMA, RSI (+ Stochastic RSI), Bollinger Band squeeze detection. Returns `TechnicalContext` Pydantic model. Minimum 21 data points required.
-- **News provider package (Step 2):** New `news/` package with `NewsProvider` protocol, Google News RSS implementation (free, uses `feedparser`), optional Tavily implementation, and cached+rate-limited wrapper reusing existing `TTLCache`.
-- **TechnicalAnalyst strategy (Step 3):** New rule-based strategy implementing `Strategy` ABC. Generates buy/sell signals on EMA crossover + RSI + squeeze confluence. Confidence weighted: EMA divergence (0.4) + RSI extremity (0.3) + squeeze confirmation (0.3).
-- **Enhanced AI Analyst prompt (Step 4):** Modified `_evaluate()` to accept `DataProvider`, fetch price history + compute TA summary, fetch news headlines. Both sections are optional — graceful degradation. Increased `max_tokens` 16→32.
-- **Wiring (Step 5):** Registered `TechnicalAnalyst` in `STRATEGY_REGISTRY`. Added `NewsConfig` to `AppConfig`. Orchestrator builds news provider and wires it into AI Analyst. Updated `config.yaml` with new sections. Added `feedparser>=6.0` dependency.
-
-### Edits
-- `src/polymarket_agent/strategies/indicators.py` — **NEW** EMA, RSI, Squeeze computations + TechnicalContext model
-- `src/polymarket_agent/strategies/technical_analyst.py` — **NEW** rule-based TA strategy
-- `src/polymarket_agent/news/__init__.py` — **NEW** news package init
-- `src/polymarket_agent/news/models.py` — **NEW** NewsItem model
-- `src/polymarket_agent/news/provider.py` — **NEW** NewsProvider protocol
-- `src/polymarket_agent/news/google_rss.py` — **NEW** Google News RSS implementation
-- `src/polymarket_agent/news/tavily_client.py` — **NEW** Tavily implementation (optional)
-- `src/polymarket_agent/news/cached.py` — **NEW** cached + rate-limited wrapper
-- `src/polymarket_agent/strategies/ai_analyst.py` — added TA context, news context, `set_news_provider()`, enriched prompt
-- `src/polymarket_agent/orchestrator.py` — registered TechnicalAnalyst, added `_build_news_provider()`, wire news into AIAnalyst
-- `src/polymarket_agent/config.py` — added `NewsConfig` model to `AppConfig`
-- `config.yaml` — added `technical_analyst` strategy + `news` config sections, set `min_strategies: 2`
-- `pyproject.toml` — added `feedparser>=6.0` dependency, `tavily` optional dep
-- `tests/test_indicators.py` — **NEW** 18 indicator tests
-- `tests/test_news_provider.py` — **NEW** 12 news provider tests
-- `tests/test_technical_analyst.py` — **NEW** 12 TA strategy tests
-- `tests/test_ai_analyst.py` — added 5 new enrichment tests
-- `docs/plans/2026-02-28-ta-and-news.md` — **NEW** design document
-
-### NOT Changed
-- No changes to existing strategy logic (SignalTrader, MarketMaker, Arbitrageur)
-- No changes to execution layer, MCP server, or dashboard
-- No changes to DB schema
-- All existing tests unaffected (backward-compatible changes)
-
-### Verification
-```bash
-uv run pytest tests/ -v                     # 367 passed
-ruff check src/                              # All checks passed
-uv run mypy src/                             # Only pre-existing dashboard errors (12)
-```
-
-### Branch
-- Working branch: `main`
-
----
-
 ## Project Summary
 
 **Polymarket Agent** is a Python auto-trading pipeline for Polymarket prediction markets. It wraps the official `polymarket` CLI (v0.1.4, installed via Homebrew) into a structured system with pluggable trading strategies, paper/live execution, and MCP server integration for AI agents.
 
-## Current State: Phase 4 COMPLETE
+## Current State: Phase 4 COMPLETE + Strategy Research Improvements
 
-- 395 tests passing, ruff lint clean, mypy strict clean
+- 440 tests passing, ruff lint clean, mypy strict clean
 - All 4 strategies implemented: SignalTrader, MarketMaker, Arbitrageur, AIAnalyst
 - Signal aggregation integrated (groups by market+token+side, unique strategy consensus)
 - MCP server with 14 tools: search_markets, get_market_detail, get_price_history, get_leaderboard, get_portfolio, get_signals, refresh_signals, place_trade, analyze_market, get_event, get_price, get_spread, get_volume, get_positions
@@ -570,8 +643,8 @@ MCP Server (FastMCP, stdio) → AppContext → Orchestrator + Data + Config
 | `src/polymarket_agent/strategies/market_maker.py` | Bid/ask around orderbook midpoint |
 | `src/polymarket_agent/strategies/arbitrageur.py` | Price-sum deviation detection |
 | `src/polymarket_agent/strategies/ai_analyst.py` | Claude probability estimates + divergence trading |
-| `src/polymarket_agent/strategies/exit_manager.py` | ExitManager: generates sell signals for held positions (4 exit rules) |
-| `src/polymarket_agent/strategies/aggregator.py` | Signal dedup, confidence filtering, consensus |
+| `src/polymarket_agent/strategies/exit_manager.py` | ExitManager: generates sell signals for held positions (5 exit rules incl. trailing stop) |
+| `src/polymarket_agent/strategies/aggregator.py` | Signal dedup, confidence blending, conflict resolution, consensus |
 | `src/polymarket_agent/execution/base.py` | Executor ABC + Portfolio + Order + cancel_order/get_open_orders |
 | `src/polymarket_agent/execution/paper.py` | Paper trading with virtual USDC |
 | `src/polymarket_agent/execution/live.py` | Live trading via py-clob-client (optional dep) |
@@ -586,7 +659,7 @@ MCP Server (FastMCP, stdio) → AppContext → Orchestrator + Data + Config
 3. **Strategy ABC** — All strategies implement `analyze(markets, data) -> list[Signal]`. Register in `STRATEGY_REGISTRY` dict in `orchestrator.py`.
 4. **Executor ABC** — `place_order(signal) -> Order | None`. Paper and Live share interface.
 5. **Signal dataclass** — `strategy`, `market_id`, `token_id`, `side` (buy/sell), `confidence`, `target_price`, `size` (USDC), `reason`.
-6. **Signal aggregation** — `aggregate_signals()` groups by `(market_id, token_id, side)`, deduplicates (highest confidence wins), filters by `min_confidence`, enforces `min_strategies` consensus (unique strategy names). Runs between strategy collection and execution in `tick()`.
+6. **Signal aggregation** — `aggregate_signals()` first suppresses conflicting signals (opposite sides on same market+token), then groups by `(market_id, token_id, side)`, blends confidence (group average), filters by `min_confidence`, enforces `min_strategies` consensus (unique strategy names). Runs between strategy collection and execution in `tick()`.
 7. **MCP server** — FastMCP with lifespan context. `AppContext` dataclass holds Orchestrator + PolymarketData + AppConfig. Tools are thin wrappers that delegate to existing layers. `configure()` sets config/db paths for the module-level `mcp` instance before `mcp.run()`.
 8. **Executor factory** — `_build_executor()` in Orchestrator selects PaperTrader or LiveTrader based on `config.mode`. Live mode lazily imports LiveTrader and reads env vars.
 9. **Risk gate** — `_check_risk()` enforces max_position_size, max_daily_loss, max_open_orders before every trade in `tick()`.
@@ -693,12 +766,13 @@ See `docs/plans/2026-02-26-polymarket-agent-phase3.md` for detailed plan with 6 
 - `docs/plans/2026-02-27-exit-manager-design.md` — Exit manager design document
 - `docs/plans/2026-02-27-exit-manager-plan.md` — Exit manager implementation plan
 - `docs/plans/2026-02-28-focus-trading.md` — Focus trading + research command design
+- `docs/plans/2026-03-03-strategy-research-improvements.md` — Strategy research improvements (Platt scaling, MACD, regime detection, aggregation blending, trailing stop)
 
 ## Verification Commands
 
 ```bash
 # Everything should pass
-uv run pytest tests/ -v           # 393 tests passing
+uv run pytest tests/ -v           # 440 tests passing
 uv run ruff check src/            # All checks passed
 uv run mypy src/                  # Success: no issues found in 35 source files
 uv run polymarket-agent tick      # Fetches live data, paper trades (focus-filtered)

@@ -128,9 +128,7 @@ class WhaleFollower(Strategy):
                     confidence=round(confidence, 4),
                     target_price=target_price,
                     size=self._order_size * confidence,
-                    reason=(
-                        f"whale_follow: {trade.trader_name} (rank {trade.rank}) " f"{trade.side} ${trade.size:.0f}"
-                    ),
+                    reason=(f"whale_follow: {trade.trader_name} (rank {trade.rank}) {trade.side} ${trade.size:.0f}"),
                 )
             )
         return signals

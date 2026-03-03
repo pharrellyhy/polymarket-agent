@@ -21,9 +21,9 @@ strategies:
     enabled: true
     model: qwen/qwen3.5-35b-a3b
     max_calls_per_hour: 5000
-    min_divergence: 0.05
+    min_divergence: 0.10
     min_price: 0.05
-    order_size: 5.0
+    order_size: 10.0
     provider: openai
     extra_params:
       reasoning_budget: 0    # cap reasoning tokens
@@ -61,21 +61,21 @@ strategies:
     kalshi_api_key_env: KALSHI_API_KEY
     metaculus_api_key_env: METACULUS_API_KEY
 aggregation:
-  min_confidence: 0.01
-  min_strategies: 1
+  min_confidence: 0.40
+  min_strategies: 2
 risk:
   max_position_size: 200.0
   max_daily_loss: 500.0
   max_open_orders: 30
-  reentry_cooldown_hours: 1
+  reentry_cooldown_hours: 2
 conditional_orders:
   enabled: true
-  default_stop_loss_pct: 0.25
-  default_take_profit_pct: 0.15
+  default_stop_loss_pct: 0.15
+  default_take_profit_pct: 0.25
   trailing_stop_enabled: false
   trailing_stop_pct: 0.05
 position_sizing:
-  method: fixed
+  method: fractional_kelly
   kelly_fraction: 0.25
   max_bet_pct: 0.1
 backtest:
@@ -84,12 +84,12 @@ backtest:
 exit_manager:
   enabled: true
   profit_target_pct: 0.15
-  stop_loss_pct: 0.25
+  stop_loss_pct: 0.15
   signal_reversal: true
   max_hold_hours: 24
 news:
   enabled: true
-  provider: tavily
+  provider: google_rss
   api_key_env: TAVILY_API_KEY
   max_calls_per_hour: 100
   cache_ttl: 600

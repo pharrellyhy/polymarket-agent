@@ -6,6 +6,7 @@ structured Pydantic models.
 """
 
 import math
+from bisect import bisect_left, bisect_right
 from typing import Literal
 
 from pydantic import BaseModel
@@ -38,6 +39,30 @@ class SqueezeResult(BaseModel):
     bb_width: float
 
 
+class MACDResult(BaseModel):
+    """MACD indicator result."""
+
+    macd_line: float
+    signal_line: float
+    histogram: float
+    crossover: Literal["bullish", "bearish", "neutral"]
+
+
+class DivergenceResult(BaseModel):
+    """RSI/MACD divergence detection result."""
+
+    rsi_divergence: Literal["bullish", "bearish"] | None = None
+    macd_divergence: Literal["bullish", "bearish"] | None = None
+
+
+class RegimeResult(BaseModel):
+    """Market regime classification."""
+
+    regime: Literal["trending", "ranging", "transitional"]
+    ema_slope: float
+    bb_expanding: bool
+
+
 class TechnicalContext(BaseModel):
     """Aggregated technical analysis for a single token."""
 
@@ -46,11 +71,20 @@ class TechnicalContext(BaseModel):
     ema_slow: EMAResult
     rsi: RSIResult
     squeeze: SqueezeResult
+    macd: MACDResult | None = None
+    divergence: DivergenceResult | None = None
+    regime: RegimeResult | None = None
+    atr: float | None = None
     trend_direction: Literal["up", "down", "neutral"]
     ema_crossover: Literal["bullish", "bearish", "none"]
     price_change_pct: float
     current_price: float
     price_start: float
+
+
+_MACD_FAST_PERIOD = 6
+_MACD_SLOW_PERIOD = 13
+_MACD_SIGNAL_PERIOD = 5
 
 
 # ---------------------------------------------------------------------------
@@ -199,6 +233,259 @@ def compute_squeeze(
 
 
 # ---------------------------------------------------------------------------
+# MACD
+# ---------------------------------------------------------------------------
+
+
+def _compute_ema_series(prices: list[float], period: int) -> list[float]:
+    """Compute a full EMA series (one value per input price after warm-up)."""
+    if not prices:
+        return []
+    if len(prices) < period:
+        avg = sum(prices) / len(prices)
+        return [avg] * len(prices)
+
+    multiplier = 2.0 / (period + 1)
+    ema = sum(prices[:period]) / period
+    series = [ema]
+    for price in prices[period:]:
+        ema = (price - ema) * multiplier + ema
+        series.append(ema)
+    return series
+
+
+def compute_macd(
+    prices: list[float],
+    fast: int = _MACD_FAST_PERIOD,
+    slow: int = _MACD_SLOW_PERIOD,
+    signal: int = _MACD_SIGNAL_PERIOD,
+) -> MACDResult | None:
+    """Compute MACD with halved periods (6/13/5) for prediction market timeframes."""
+    if len(prices) < slow + signal:
+        return None
+
+    fast_ema = _compute_ema_series(prices, fast)
+    slow_ema = _compute_ema_series(prices, slow)
+
+    # Align: slow_ema starts at index 0 (after slow-period warm-up)
+    # fast_ema has more values; trim to match slow_ema length
+    offset = len(fast_ema) - len(slow_ema)
+    macd_line_series = [f - s for f, s in zip(fast_ema[offset:], slow_ema)]
+
+    if len(macd_line_series) < signal:
+        return None
+
+    # Signal line = EMA of MACD line
+    sig_ema = _compute_ema_series(macd_line_series, signal)
+
+    macd_val = macd_line_series[-1]
+    signal_val = sig_ema[-1]
+    histogram = macd_val - signal_val
+
+    # Crossover detection: compare current and previous
+    crossover: Literal["bullish", "bearish", "neutral"] = "neutral"
+    if len(macd_line_series) >= 2 and len(sig_ema) >= 2:
+        prev_macd = macd_line_series[-2]
+        prev_sig = sig_ema[-2]
+        if prev_macd <= prev_sig and macd_val > signal_val:
+            crossover = "bullish"
+        elif prev_macd >= prev_sig and macd_val < signal_val:
+            crossover = "bearish"
+
+    return MACDResult(
+        macd_line=round(macd_val, 6),
+        signal_line=round(signal_val, 6),
+        histogram=round(histogram, 6),
+        crossover=crossover,
+    )
+
+
+# ---------------------------------------------------------------------------
+# ATR (close-only approximation)
+# ---------------------------------------------------------------------------
+
+
+def compute_atr(prices: list[float], period: int = 14) -> float | None:
+    """ATR approximation using |close[i] - close[i-1]| (no OHLC data)."""
+    if len(prices) < period + 1:
+        return None
+
+    true_ranges = [abs(prices[i] - prices[i - 1]) for i in range(1, len(prices))]
+
+    # Wilder smoothing
+    atr = sum(true_ranges[:period]) / period
+    for tr in true_ranges[period:]:
+        atr = (atr * (period - 1) + tr) / period
+
+    return round(atr, 6)
+
+
+def adaptive_rsi_thresholds(prices: list[float], period: int = 14) -> tuple[float, float]:
+    """Return (overbought, oversold) RSI thresholds adapted to volatility.
+
+    Low vol (ATR < 20th pctile) → 65/35
+    Normal → 70/30
+    High vol (ATR > 80th pctile) → 75/25
+    """
+    if len(prices) < period + 1:
+        return 70.0, 30.0
+
+    # Compute rolling ATR values for percentile ranking
+    true_ranges = [abs(prices[i] - prices[i - 1]) for i in range(1, len(prices))]
+    atr_values: list[float] = []
+    atr = sum(true_ranges[:period]) / period
+    atr_values.append(atr)
+    for tr in true_ranges[period:]:
+        atr = (atr * (period - 1) + tr) / period
+        atr_values.append(atr)
+
+    if not atr_values:
+        return 70.0, 30.0
+
+    sorted_atrs = sorted(atr_values)
+    current_atr = atr_values[-1]
+    if len(sorted_atrs) == 1:
+        rank = 0.5
+    else:
+        low_idx = bisect_left(sorted_atrs, current_atr)
+        high_idx = bisect_right(sorted_atrs, current_atr) - 1
+        rank = (low_idx + high_idx) / 2 / (len(sorted_atrs) - 1)
+
+    if rank < 0.2:
+        return 65.0, 35.0  # Low vol: tighter thresholds
+    elif rank > 0.8:
+        return 75.0, 25.0  # High vol: wider thresholds
+    else:
+        return 70.0, 30.0
+
+
+# ---------------------------------------------------------------------------
+# Divergence detection
+# ---------------------------------------------------------------------------
+
+
+def _find_swing_points(values: list[float], lookback: int) -> tuple[list[int], list[int]]:
+    """Find indices of swing highs and swing lows in the last `lookback` values."""
+    if len(values) < 3:
+        return [], []
+
+    start = max(0, len(values) - lookback)
+    highs: list[int] = []
+    lows: list[int] = []
+
+    for i in range(start + 1, len(values) - 1):
+        if values[i] > values[i - 1] and values[i] > values[i + 1]:
+            highs.append(i)
+        if values[i] < values[i - 1] and values[i] < values[i + 1]:
+            lows.append(i)
+
+    return highs, lows
+
+
+def detect_divergence(
+    prices: list[float],
+    rsi_values: list[float],
+    macd_values: list[float],
+    lookback: int = 10,
+) -> DivergenceResult:
+    """Detect RSI and MACD divergences against price over a lookback window.
+
+    Bullish divergence: price makes lower low but indicator makes higher low.
+    Bearish divergence: price makes higher high but indicator makes lower high.
+    """
+    result = DivergenceResult()
+
+    if len(prices) < lookback or len(rsi_values) < lookback or len(macd_values) < lookback:
+        return result
+
+    # Align all series to the same length (take the last N from each)
+    n = min(len(prices), len(rsi_values), len(macd_values))
+    p = prices[-n:]
+    r = rsi_values[-n:]
+    m = macd_values[-n:]
+
+    p_highs, p_lows = _find_swing_points(p, lookback)
+
+    # RSI divergence
+    if len(p_lows) >= 2:
+        i, j = p_lows[-2], p_lows[-1]
+        if j < len(r) and i < len(r):
+            if p[j] < p[i] and r[j] > r[i]:
+                result.rsi_divergence = "bullish"
+    if len(p_highs) >= 2:
+        i, j = p_highs[-2], p_highs[-1]
+        if j < len(r) and i < len(r):
+            if p[j] > p[i] and r[j] < r[i]:
+                result.rsi_divergence = "bearish"
+
+    # MACD divergence
+    if len(p_lows) >= 2:
+        i, j = p_lows[-2], p_lows[-1]
+        if j < len(m) and i < len(m):
+            if p[j] < p[i] and m[j] > m[i]:
+                result.macd_divergence = "bullish"
+    if len(p_highs) >= 2:
+        i, j = p_highs[-2], p_highs[-1]
+        if j < len(m) and i < len(m):
+            if p[j] > p[i] and m[j] < m[i]:
+                result.macd_divergence = "bearish"
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Market regime detection
+# ---------------------------------------------------------------------------
+
+
+def detect_regime(prices: list[float], ema_slow_period: int = 21, bb_period: int = 20) -> RegimeResult | None:
+    """Classify market regime as trending, ranging, or transitional.
+
+    Trending: steep EMA slope + expanding BB width.
+    Ranging: flat EMA slope + contracting BB width.
+    Transitional: mixed signals.
+    """
+    if len(prices) < max(ema_slow_period, bb_period) + 5:
+        return None
+
+    # EMA slope: change in slow EMA over last 5 bars
+    ema_series = _compute_ema_series(prices, ema_slow_period)
+    if len(ema_series) < 5:
+        return None
+    ema_slope = (ema_series[-1] - ema_series[-5]) / max(abs(ema_series[-5]), 1e-8)
+
+    # BB width expansion: compare current width to width 5 bars ago
+    def _bb_width(window: list[float]) -> float:
+        sma = sum(window) / len(window)
+        var = sum((p - sma) ** 2 for p in window) / len(window)
+        std = math.sqrt(var)
+        return (2 * 2.0 * std) / sma if sma > 0 else 0.0
+
+    if len(prices) < bb_period + 5:
+        return None
+
+    current_bb = _bb_width(prices[-bb_period:])
+    prev_bb = _bb_width(prices[-bb_period - 5 : -5])
+    bb_expanding = current_bb > prev_bb
+
+    # Classification
+    steep_slope = abs(ema_slope) > 0.01
+    regime: Literal["trending", "ranging", "transitional"]
+    if steep_slope and bb_expanding:
+        regime = "trending"
+    elif not steep_slope and not bb_expanding:
+        regime = "ranging"
+    else:
+        regime = "transitional"
+
+    return RegimeResult(
+        regime=regime,
+        ema_slope=round(ema_slope, 6),
+        bb_expanding=bb_expanding,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Combined analysis
 # ---------------------------------------------------------------------------
 
@@ -227,6 +514,37 @@ def analyze_market_technicals(
     ema_slow = compute_ema(prices, ema_slow_period)
     rsi = compute_rsi(prices, rsi_period)
     squeeze = compute_squeeze(prices)
+    macd = compute_macd(prices)
+    atr = compute_atr(prices)
+    regime = detect_regime(prices, ema_slow_period)
+
+    # Apply adaptive RSI thresholds
+    ob_thresh, os_thresh = adaptive_rsi_thresholds(prices, rsi_period)
+    rsi = rsi.model_copy(
+        update={
+            "is_overbought": rsi.rsi > ob_thresh,
+            "is_oversold": rsi.rsi < os_thresh,
+        }
+    )
+
+    # Divergence detection (needs RSI and MACD series)
+    divergence_result: DivergenceResult | None = None
+    if macd is not None:
+        # Build RSI series for divergence
+        rsi_series: list[float] = []
+        for end_idx in range(rsi_period + 1, len(prices) + 1):
+            r = compute_rsi(prices[:end_idx], rsi_period)
+            rsi_series.append(r.rsi)
+
+        # Build MACD histogram series
+        macd_series: list[float] = []
+        min_macd_len = _MACD_SLOW_PERIOD + _MACD_SIGNAL_PERIOD
+        for end_idx in range(min_macd_len, len(prices) + 1):
+            m = compute_macd(prices[:end_idx])
+            macd_series.append(m.histogram if m else 0.0)
+
+        if rsi_series and macd_series:
+            divergence_result = detect_divergence(prices, rsi_series, macd_series)
 
     # Trend direction from price change
     price_start = prices[0]
@@ -259,6 +577,10 @@ def analyze_market_technicals(
         ema_slow=ema_slow,
         rsi=rsi,
         squeeze=squeeze,
+        macd=macd,
+        divergence=divergence_result,
+        regime=regime,
+        atr=atr,
         trend_direction=trend,
         ema_crossover=crossover,
         price_change_pct=round(change_pct, 4),

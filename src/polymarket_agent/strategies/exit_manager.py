@@ -27,13 +27,15 @@ class ExitManager:
 
     Exit rules are evaluated in priority order; the first matching rule wins:
     1. Profit target -- current price >= entry * (1 + profit_target_pct)
-    2. Stop loss -- current price <= entry * (1 - stop_loss_pct)
-    3. Signal reversal -- entry condition no longer holds
-    4. Stale position -- held longer than max_hold_hours
+    2. Trailing stop -- price drops trailing_stop_pct below high-water mark
+    3. Stop loss -- current price <= entry * (1 - stop_loss_pct)
+    4. Signal reversal -- entry condition no longer holds
+    5. Stale position -- held longer than max_hold_hours
     """
 
     def __init__(self, config: ExitManagerConfig) -> None:
         self._config = config
+        self._high_water_marks: dict[str, float] = {}
 
     def evaluate(
         self,
@@ -44,13 +46,24 @@ class ExitManager:
         if not self._config.enabled:
             return []
 
+        if self._config.trailing_stop_enabled:
+            # Clean up high-water marks for positions no longer held.
+            stale_tokens = [t for t in self._high_water_marks if t not in positions]
+            for t in stale_tokens:
+                del self._high_water_marks[t]
+
         signals: list[Signal] = []
         for token_id, pos in positions.items():
             current_price = current_prices.get(token_id)
             if current_price is None:
                 continue
 
-            reason = self._check_exit(pos, current_price)
+            if self._config.trailing_stop_enabled:
+                # Update high-water mark only when trailing stop logic is active.
+                hw = self._high_water_marks.get(token_id, current_price)
+                self._high_water_marks[token_id] = max(hw, current_price)
+
+            reason = self._check_exit(pos, current_price, token_id)
             if reason is None:
                 continue
 
@@ -73,7 +86,7 @@ class ExitManager:
             )
         return signals
 
-    def _check_exit(self, pos: dict[str, Any], current_price: float) -> str | None:
+    def _check_exit(self, pos: dict[str, Any], current_price: float, token_id: str) -> str | None:
         """Check exit rules in priority order. Return reason string or None."""
         avg_price = _as_float(pos.get("avg_price", 0))
         if avg_price is None or avg_price <= 0:
@@ -84,18 +97,28 @@ class ExitManager:
             pct = (current_price - avg_price) / avg_price * 100
             return f"profit_target: +{pct:.1f}% (entry={avg_price:.4f}, current={current_price:.4f})"
 
-        # Rule 2: Stop loss
+        # Rule 2: Trailing stop
+        if self._config.trailing_stop_enabled:
+            hw = self._high_water_marks.get(token_id, current_price)
+            if hw > avg_price and current_price < hw * (1.0 - self._config.trailing_stop_pct):
+                drop_pct = (hw - current_price) / hw * 100
+                return (
+                    f"trailing_stop: -{drop_pct:.1f}% from high "
+                    f"(high={hw:.4f}, current={current_price:.4f}, entry={avg_price:.4f})"
+                )
+
+        # Rule 3: Stop loss
         if current_price <= avg_price * (1.0 - self._config.stop_loss_pct):
             pct = (avg_price - current_price) / avg_price * 100
             return f"stop_loss: -{pct:.1f}% (entry={avg_price:.4f}, current={current_price:.4f})"
 
-        # Rule 3: Signal reversal
+        # Rule 4: Signal reversal
         if self._config.signal_reversal:
             reversal = self._check_signal_reversal(pos, current_price)
             if reversal is not None:
                 return reversal
 
-        # Rule 4: Stale position
+        # Rule 5: Stale position
         opened_at_str = pos.get("opened_at")
         if opened_at_str:
             try:

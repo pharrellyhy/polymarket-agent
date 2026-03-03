@@ -132,6 +132,34 @@ class TestStalePosition:
         assert len(signals) == 0
 
 
+class TestTrailingStop:
+    def test_trailing_stop_triggers_after_pullback(self) -> None:
+        cfg = ExitManagerConfig(
+            trailing_stop_enabled=True,
+            trailing_stop_pct=0.05,
+            profit_target_pct=0.50,
+            stop_loss_pct=0.50,
+            signal_reversal=False,
+        )
+        em = ExitManager(cfg)
+        token_id, pos = _make_position(avg_price=0.40)
+        positions = {token_id: pos}
+
+        # First tick sets the high-water mark.
+        assert em.evaluate(positions, {token_id: 0.50}) == []
+
+        # 6% drawdown from 0.50 high triggers 5% trailing stop.
+        signals = em.evaluate(positions, {token_id: 0.47})
+        assert len(signals) == 1
+        assert "trailing_stop" in signals[0].reason
+
+    def test_disabled_trailing_stop_does_not_track_high_water(self) -> None:
+        em = ExitManager(ExitManagerConfig(trailing_stop_enabled=False))
+        token_id, pos = _make_position(avg_price=0.40)
+        em.evaluate({token_id: pos}, {token_id: 0.50})
+        assert em._high_water_marks == {}
+
+
 class TestDisabled:
     def test_disabled_returns_empty(self) -> None:
         cfg = ExitManagerConfig(enabled=False)
