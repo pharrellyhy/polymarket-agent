@@ -63,7 +63,8 @@ strategies:
     metaculus_api_key_env: METACULUS_API_KEY
 aggregation:
   min_confidence: 0.40
-  min_strategies: 2
+  min_strategies: 1
+  performance_weighted: true
 risk:
   max_position_size: 200.0
   max_daily_loss: 500.0

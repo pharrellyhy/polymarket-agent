@@ -94,7 +94,12 @@ class PositionSizer:
             return signal.size
 
         max_bet = portfolio.total_value * self._max_bet_pct
-        return max(0.0, min(raw * portfolio.total_value, max_bet, signal.size))
+        sized = raw * portfolio.total_value
+        # When Kelly returns ~0 (e.g. no calibration data yet), fall back to
+        # the strategy's original order_size rather than placing a zero trade.
+        if sized < 1.0:
+            sized = signal.size
+        return max(0.0, min(sized, max_bet, signal.size))
 
     def _get_calibrated_confidence(self, signal: "Signal") -> float:
         """Get calibrated confidence if a calibration table is available."""

@@ -120,11 +120,12 @@ class TestComputeSize:
         # fractional_kelly = 0.25 * 0.4 = 0.1; result = 0.1 * 1000 = 100
         assert abs(result - 100.0) < 1e-9
 
-    def test_zero_edge_returns_zero(self) -> None:
+    def test_zero_edge_falls_back_to_signal_size(self) -> None:
         sizer = PositionSizer(method="kelly")
         signal = _make_signal(confidence=0.5, price=0.50, size=50.0)
         portfolio = _make_portfolio(1000.0)
-        assert sizer.compute_size(signal, portfolio) == 0.0
+        # When Kelly computes ~0, fall back to the signal's order_size
+        assert sizer.compute_size(signal, portfolio) == 50.0
 
 
 # ------------------------------------------------------------------
