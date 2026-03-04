@@ -2,6 +2,7 @@
 
 import math
 from dataclasses import dataclass
+from datetime import datetime
 
 
 @dataclass
@@ -61,7 +62,11 @@ def _compute_total_return(snapshots: list[PortfolioSnapshot], initial_balance: f
 
 
 def _compute_sharpe_ratio(snapshots: list[PortfolioSnapshot]) -> float:
-    """Annualized Sharpe ratio from daily-ish snapshots. Assumes risk-free rate of 0."""
+    """Annualized Sharpe ratio from portfolio snapshots. Assumes risk-free rate of 0.
+
+    Computes actual periods per year from snapshot timestamps rather than
+    hardcoding sqrt(252) to handle variable snapshot frequencies correctly.
+    """
     if len(snapshots) < 2:
         return 0.0
     values = [s.total_value for s in snapshots]
@@ -69,16 +74,48 @@ def _compute_sharpe_ratio(snapshots: list[PortfolioSnapshot]) -> float:
     for i in range(1, len(values)):
         if values[i - 1] > 0:
             returns.append((values[i] - values[i - 1]) / values[i - 1])
-    if not returns:
+    if not returns or len(returns) < 2:
         return 0.0
     mean = sum(returns) / len(returns)
-    if len(returns) < 2:
-        return 0.0
     variance = sum((r - mean) ** 2 for r in returns) / (len(returns) - 1)
     std = math.sqrt(variance)
     if std == 0:
         return 0.0
-    return (mean / std) * math.sqrt(252)
+
+    # Compute annualization factor from actual snapshot timestamps
+    periods_per_year = _estimate_periods_per_year(snapshots)
+    return (mean / std) * math.sqrt(periods_per_year)
+
+
+def _estimate_periods_per_year(snapshots: list[PortfolioSnapshot]) -> float:
+    """Estimate periods per year from snapshot timestamp spacing.
+
+    Parses ISO timestamps and computes the average interval between snapshots,
+    then derives how many such intervals fit in a year. Falls back to 252
+    (daily trading days) if timestamps can't be parsed.
+    """
+    if len(snapshots) < 2:
+        return 252.0
+
+    timestamps: list[datetime] = []
+    for s in snapshots:
+        try:
+            ts = datetime.fromisoformat(s.timestamp.replace("Z", "+00:00"))
+            timestamps.append(ts)
+        except (ValueError, AttributeError):
+            continue
+
+    if len(timestamps) < 2:
+        return 252.0
+
+    total_seconds = (timestamps[-1] - timestamps[0]).total_seconds()
+    if total_seconds <= 0:
+        return 252.0
+
+    num_intervals = len(timestamps) - 1
+    avg_interval_seconds = total_seconds / num_intervals
+    seconds_per_year = 365.25 * 24 * 3600
+    return seconds_per_year / avg_interval_seconds
 
 
 def _compute_max_drawdown(snapshots: list[PortfolioSnapshot]) -> float:

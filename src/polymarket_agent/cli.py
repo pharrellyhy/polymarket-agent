@@ -1103,3 +1103,50 @@ def evaluate(
             typer.echo(summary)
     finally:
         orch.close()
+
+
+@app.command(name="strategy-stats")
+def strategy_stats(
+    config: ConfigOption = DEFAULT_CONFIG,
+    db: DbOption = DEFAULT_DB,
+    strategy: Annotated[str | None, typer.Option("--strategy", "-s", help="Filter by strategy name")] = None,
+    json_output: Annotated[bool, typer.Option("--json/--no-json", help="Output as JSON")] = False,
+) -> None:
+    """Show per-strategy accuracy and P&L from resolved signal outcomes."""
+    _cfg, orch = _build_orchestrator(config, db)
+    try:
+        accuracy = orch.db.get_strategy_accuracy(strategy=strategy)
+        pnl = orch.db.get_strategy_pnl(strategy=strategy)
+        pnl_map = {row["strategy"]: row for row in pnl}
+
+        if json_output:
+            combined = []
+            for row in accuracy:
+                strat_name = str(row["strategy"])
+                pnl_row = pnl_map.get(strat_name, {})
+                combined.append({**row, **pnl_row})
+            typer.echo(_json.dumps(combined, indent=2, default=str))
+            return
+
+        if not accuracy:
+            typer.echo("No resolved signal outcomes yet.")
+            return
+
+        typer.echo("\n=== Strategy Performance (Resolved Outcomes) ===\n")
+        typer.echo(f"{'Strategy':<20} {'Trades':>7} {'Wins':>6} {'Win%':>7} {'Brier':>8} {'Total P&L':>10} {'Avg P&L':>9}")
+        typer.echo("-" * 72)
+        for row in accuracy:
+            strat_name = str(row["strategy"])
+            pnl_row = pnl_map.get(strat_name, {})
+            total_pnl = pnl_row.get("total_pnl", 0.0)
+            avg_pnl = pnl_row.get("avg_pnl", 0.0)
+            typer.echo(
+                f"{strat_name:<20} {row['total']:>7} {row['wins']:>6} "
+                f"{float(str(row['win_rate'])) * 100:>6.1f}% "
+                f"{float(str(row.get('avg_brier', 0) or 0)):>8.4f} "
+                f"{float(str(total_pnl)):>10.2f} "
+                f"{float(str(avg_pnl)):>9.4f}"
+            )
+        typer.echo()
+    finally:
+        orch.close()

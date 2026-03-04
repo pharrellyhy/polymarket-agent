@@ -131,3 +131,85 @@ def test_blend_confidence_disabled_uses_max() -> None:
     )
     assert len(result) == 1
     assert result[0].confidence == 0.9
+
+
+# ------------------------------------------------------------------
+# Weighted aggregation (Phase G)
+# ------------------------------------------------------------------
+
+
+def test_weighted_blending_favors_accurate_strategy() -> None:
+    """When strategy_weights is provided, confidence blending is weighted."""
+    signals = [
+        _signal("accurate", "1", "buy", confidence=0.9),
+        _signal("inaccurate", "1", "buy", confidence=0.4),
+    ]
+    weights = {"accurate": 0.8, "inaccurate": 0.3}
+
+    result = aggregate_signals(
+        signals, min_confidence=0.0, min_strategies=1, strategy_weights=weights
+    )
+    assert len(result) == 1
+    # Weighted avg: (0.9*0.8 + 0.4*0.3) / (0.8+0.3) = (0.72 + 0.12) / 1.1 ≈ 0.7636
+    assert result[0].confidence > 0.7  # closer to accurate strategy's value
+
+
+def test_weighted_conflict_resolution_lets_stronger_side_through() -> None:
+    """Weighted conflict resolution: higher-weight side wins, losing side suppressed."""
+    signals = [
+        _signal("accurate", "1", "buy", confidence=0.9),
+        _signal("inaccurate", "1", "sell", confidence=0.7),
+    ]
+    weights = {"accurate": 0.8, "inaccurate": 0.3}
+
+    result = aggregate_signals(
+        signals, min_confidence=0.0, min_strategies=1, strategy_weights=weights
+    )
+    # Buy side wins because "accurate" has higher weight
+    assert len(result) == 1
+    assert result[0].side == "buy"
+
+
+def test_weighted_conflict_resolution_suppresses_weaker_side() -> None:
+    """Weaker side in a conflict is suppressed, not both sides."""
+    signals = [
+        _signal("weak", "1", "buy", confidence=0.9),
+        _signal("strong", "1", "sell", confidence=0.7),
+    ]
+    weights = {"weak": 0.3, "strong": 0.9}
+
+    result = aggregate_signals(
+        signals, min_confidence=0.0, min_strategies=1, strategy_weights=weights
+    )
+    # Sell side wins because "strong" has higher weight
+    assert len(result) == 1
+    assert result[0].side == "sell"
+
+
+def test_no_weights_backward_compatible() -> None:
+    """When strategy_weights=None, behavior is unchanged."""
+    signals = [
+        _signal("A", "1", "buy", confidence=0.8),
+        _signal("B", "1", "sell", confidence=0.7),
+    ]
+    # Without weights: conflict → suppress both
+    result = aggregate_signals(
+        signals, min_confidence=0.0, min_strategies=1, strategy_weights=None
+    )
+    assert len(result) == 0
+
+
+def test_weighted_blending_unknown_strategy_defaults_to_1() -> None:
+    """Strategies not in the weights dict get weight 1.0."""
+    signals = [
+        _signal("known", "1", "buy", confidence=0.6),
+        _signal("unknown", "1", "buy", confidence=0.9),
+    ]
+    weights = {"known": 0.5}  # "unknown" defaults to 1.0
+
+    result = aggregate_signals(
+        signals, min_confidence=0.0, min_strategies=1, strategy_weights=weights
+    )
+    assert len(result) == 1
+    # Weighted avg: (0.6*0.5 + 0.9*1.0) / (0.5 + 1.0) = 1.2/1.5 = 0.8
+    assert abs(result[0].confidence - 0.8) < 0.01

@@ -222,3 +222,98 @@ def test_paper_trader_recover_sets_default_metadata() -> None:
         pos = paper.get_portfolio().positions["0xtok_100"]
         assert "opened_at" in pos
         assert pos["entry_strategy"] == "unknown"
+
+
+# ------------------------------------------------------------------
+# Slippage tests (Phase B)
+# ------------------------------------------------------------------
+
+
+def test_paper_trader_buy_with_slippage() -> None:
+    """Buy with slippage fills at a higher price, yielding fewer shares."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db = Database(Path(tmpdir) / "test.db")
+        paper = PaperTrader(starting_balance=1000.0, db=db, slippage_bps=50)
+
+        order = paper.place_order(_make_signal(side="buy", price=0.5, size=50.0))
+        assert order is not None
+
+        # Fill price = 0.5 + 0.5 * 50/10000 = 0.5 + 0.0025 = 0.5025
+        assert order.price == pytest.approx(0.5025)
+        # Shares = 50.0 / 0.5025 < 100 (fewer shares due to slippage)
+        assert order.shares < 100.0
+        assert order.shares == pytest.approx(50.0 / 0.5025, rel=1e-4)
+
+        portfolio = paper.get_portfolio()
+        assert portfolio.balance == pytest.approx(950.0)
+
+
+def test_paper_trader_logs_fill_price_with_slippage() -> None:
+    """Trade log should persist the actual fill price under slippage."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db = Database(Path(tmpdir) / "test.db")
+        paper = PaperTrader(starting_balance=1000.0, db=db, slippage_bps=50)
+
+        order = paper.place_order(_make_signal(side="buy", price=0.5, size=50.0))
+        assert order is not None
+
+        trades = db.get_trades()
+        assert len(trades) == 1
+        assert trades[0]["price"] == pytest.approx(order.price)
+
+
+def test_paper_trader_sell_with_slippage() -> None:
+    """Sell with slippage fills at a lower price, yielding less proceeds."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db = Database(Path(tmpdir) / "test.db")
+        paper = PaperTrader(starting_balance=1000.0, db=db, slippage_bps=50)
+
+        paper.place_order(_make_signal(side="buy", price=0.5, size=50.0))
+        order = paper.place_order(_make_signal(side="sell", price=0.6, size=30.0))
+        assert order is not None
+
+        # Sell fill price = 0.6 - 0.6 * 50/10000 = 0.6 - 0.003 = 0.597
+        assert order.price == pytest.approx(0.597)
+
+
+def test_paper_trader_zero_slippage_unchanged() -> None:
+    """With slippage_bps=0, behavior matches original."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db = Database(Path(tmpdir) / "test.db")
+        paper = PaperTrader(starting_balance=1000.0, db=db, slippage_bps=0)
+
+        order = paper.place_order(_make_signal(side="buy", price=0.5, size=50.0))
+        assert order is not None
+        assert order.price == 0.5
+        assert order.shares == 100.0
+
+
+# ------------------------------------------------------------------
+# Mark-to-market tests (Phase C)
+# ------------------------------------------------------------------
+
+
+def test_paper_trader_mark_to_market(trader) -> None:
+    """mark_to_market updates current_price on held positions."""
+    paper, _db = trader
+    paper.place_order(_make_signal(side="buy", price=0.5, size=50.0))
+
+    portfolio_before = paper.get_portfolio()
+    assert portfolio_before.total_value == pytest.approx(1000.0)  # 950 + 100 * 0.5
+
+    # Price goes up
+    paper.mark_to_market({"0xtok_100": 0.7})
+    portfolio_after = paper.get_portfolio()
+    # total_value = 950 + 100 * 0.7 = 1020
+    assert portfolio_after.total_value == pytest.approx(1020.0)
+
+
+def test_paper_trader_mark_to_market_price_drop(trader) -> None:
+    """mark_to_market reflects unrealized losses."""
+    paper, _db = trader
+    paper.place_order(_make_signal(side="buy", price=0.5, size=50.0))
+
+    paper.mark_to_market({"0xtok_100": 0.3})
+    portfolio = paper.get_portfolio()
+    # total_value = 950 + 100 * 0.3 = 980
+    assert portfolio.total_value == pytest.approx(980.0)

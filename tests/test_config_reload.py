@@ -133,3 +133,23 @@ def test_reload_config_no_record_when_no_diff() -> None:
         changes = orch.db.get_config_changes(limit=10)
         assert len(changes) == 0
         orch.close()
+
+
+def test_reload_config_rebuilds_reflection_engine() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = AppConfig(
+            mode="paper",
+            strategies={"ai_analyst": {"enabled": True, "reflection_enabled": True}},
+        )
+        orch = Orchestrator(config=config, db_path=Path(tmpdir) / "test.db")
+
+        ai = orch.strategies[0]
+        ai._client = object()  # noqa: SLF001 - test-only setup
+        orch._reflection_engine = orch._build_reflection_engine()  # noqa: SLF001 - test internal wiring
+        assert orch._reflection_engine is not None  # noqa: SLF001 - assert setup
+
+        new_config = AppConfig(mode="paper", strategies={})
+        orch.reload_config(new_config)
+
+        assert orch._reflection_engine is None  # noqa: SLF001 - verify rebuild cleared stale engine
+        orch.close()

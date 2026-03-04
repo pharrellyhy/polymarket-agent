@@ -25,6 +25,7 @@ from polymarket_agent.news.sentiment import (
     score_sentiment,
 )
 from polymarket_agent.strategies.base import Signal, Strategy
+from polymarket_agent.strategies.debate import run_debate
 from polymarket_agent.strategies.indicators import TechnicalContext, analyze_market_technicals
 from polymarket_agent.strategies.volatility import compute_volatility_report, format_volatility_summary
 
@@ -100,6 +101,9 @@ class AIAnalyst(Strategy):
         self._structured_prompt: bool = False
         self._platt_scaling: bool = True
         self._sigmoid_confidence: bool = True
+        self._debate_mode: bool = False
+        self._reflection_enabled: bool = False
+        self._reflection_engine: Any = None  # ReflectionEngine, set externally
         self._keyword_tracker: KeywordTracker = KeywordTracker()
         self._init_client()
 
@@ -162,6 +166,8 @@ class AIAnalyst(Strategy):
         self._structured_prompt = bool(config.get("structured_prompt", self._structured_prompt))
         self._platt_scaling = bool(config.get("platt_scaling", self._platt_scaling))
         self._sigmoid_confidence = bool(config.get("sigmoid_confidence", self._sigmoid_confidence))
+        self._debate_mode = bool(config.get("debate_mode", self._debate_mode))
+        self._reflection_enabled = bool(config.get("reflection_enabled", self._reflection_enabled))
 
         raw_provider = config.get("provider", self._provider)
         new_provider = str(raw_provider).strip().lower() if raw_provider is not None else self._provider
@@ -187,6 +193,10 @@ class AIAnalyst(Strategy):
         self._news_provider = provider
         if max_results is not None:
             self._news_max_results = max(1, int(max_results))
+
+    def set_reflection_engine(self, engine: Any) -> None:
+        """Attach a ReflectionEngine for injecting past lessons into prompts."""
+        self._reflection_engine = engine
 
     def analyze(self, markets: list[Market], data: DataProvider) -> list[Signal]:
         if self._client is None:
@@ -242,6 +252,51 @@ class AIAnalyst(Strategy):
         response = self._client.chat.completions.create(**kwargs)
         content = response.choices[0].message.content
         return content.strip() if content else ""
+
+    def _evaluate_with_debate(
+        self,
+        question: str,
+        description: str,
+        current_price: float,
+        context_prompt: str,
+    ) -> float | None:
+        """Run adversarial debate and return the judge's probability estimate.
+
+        Extracts context sections from the already-built prompt and passes them
+        to the debate module. Returns None if the debate fails.
+        """
+        # Extract context sections (everything between BEGIN/END MARKET DATA markers)
+        context_sections = ""
+        start_idx = context_prompt.find("--- TECHNICAL ANALYSIS ---")
+        if start_idx == -1:
+            start_idx = context_prompt.find("--- VOLATILITY ANALYSIS ---")
+        if start_idx == -1:
+            start_idx = context_prompt.find("--- RECENT NEWS ---")
+        end_idx = context_prompt.find("--- END MARKET DATA ---")
+        if start_idx != -1 and end_idx != -1:
+            context_sections = context_prompt[start_idx:end_idx]
+
+        result = run_debate(
+            market_question=question,
+            market_description=description,
+            current_price=current_price,
+            call_llm=self._call_llm,
+            context_sections=context_sections,
+        )
+        if result is None:
+            return None
+
+        # Count 3 LLM calls for rate limiting
+        self._call_timestamps.extend([time.monotonic()] * 2)
+
+        logger.info(
+            "Debate: bull=%.3f bear=%.3f judge=%.3f for %s",
+            result.bull_probability,
+            result.bear_probability,
+            result.judge_probability,
+            question[:60],
+        )
+        return result.judge_probability
 
     @staticmethod
     def _extremize(p: float, alpha: float = math.sqrt(3)) -> float:
@@ -445,6 +500,19 @@ class AIAnalyst(Strategy):
         if keyword_spikes:
             prompt += f"\n--- KEYWORD SPIKES ---\n{format_keyword_spikes(keyword_spikes)}\n"
 
+        # Past lessons from reflection memory (optional)
+        if self._reflection_enabled and self._reflection_engine is not None:
+            try:
+                from polymarket_agent.strategies.reflection import ReflectionEngine  # noqa: PLC0415
+
+                if isinstance(self._reflection_engine, ReflectionEngine):
+                    lessons = self._reflection_engine.retrieve_relevant_lessons(market.question)
+                    lessons_text = ReflectionEngine.format_lessons_for_prompt(lessons)
+                    if lessons_text:
+                        prompt += f"\n{lessons_text}\n"
+            except Exception:
+                logger.debug("Failed to retrieve lessons for prompt enrichment")
+
         prompt += f"--- END MARKET DATA ---\n\nCurrent market price: {yes_price:.2f}\n"
 
         if self._structured_prompt:
@@ -463,24 +531,29 @@ class AIAnalyst(Strategy):
             prompt += "Respond with ONLY a single decimal number between 0.0 and 1.0."
 
         try:
-            text = self._call_llm(prompt)
+            if self._debate_mode:
+                estimate = self._evaluate_with_debate(
+                    question, market.description or "", yes_price, prompt
+                )
+                if estimate is None:
+                    return None
+            else:
+                text = self._call_llm(prompt)
 
-            if self._structured_prompt:
-                # Try to extract from "FINAL PROBABILITY:" line first
-                fp_match = re.search(r"FINAL\s+PROBABILITY\s*:\s*(0(?:\.\d+)?|1(?:\.0+)?)", text)
-                if fp_match:
-                    matches = [fp_match.group(1)]
+                if self._structured_prompt:
+                    fp_match = re.search(r"FINAL\s+PROBABILITY\s*:\s*(0(?:\.\d+)?|1(?:\.0+)?)", text)
+                    if fp_match:
+                        matches = [fp_match.group(1)]
+                    else:
+                        matches = re.findall(r"\b(0(?:\.\d+)?|1(?:\.0+)?)\b", text)
                 else:
                     matches = re.findall(r"\b(0(?:\.\d+)?|1(?:\.0+)?)\b", text)
-            else:
-                # Use findall + take last match: thinking models (e.g. Qwen) emit
-                # reasoning text before the final numeric answer.
-                matches = re.findall(r"\b(0(?:\.\d+)?|1(?:\.0+)?)\b", text)
 
-            if not matches:
-                logger.warning("Could not parse probability from AI response: %s", text[:200])
-                return None
-            estimate = float(matches[-1])
+                if not matches:
+                    logger.warning("Could not parse probability from AI response: %s", text[:200])
+                    return None
+                estimate = float(matches[-1])
+
             if self._platt_scaling:
                 estimate = self._extremize(estimate)
         except Exception:

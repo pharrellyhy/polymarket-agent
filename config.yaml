@@ -19,7 +19,8 @@ strategies:
     order_size: 25
   ai_analyst:
     enabled: true
-    model: qwen/qwen3.5-35b-a3b
+    model: openai/gpt-oss-120b
+    # model: qwen/qwen3.5-9b
     max_calls_per_hour: 5000
     min_divergence: 0.10
     min_price: 0.05

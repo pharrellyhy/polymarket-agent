@@ -90,6 +90,47 @@ class Database:
                 full_config_json TEXT NOT NULL
             )
         """)
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS trade_reflections (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                strategy TEXT NOT NULL,
+                market_id TEXT NOT NULL,
+                market_question TEXT NOT NULL,
+                side TEXT NOT NULL,
+                confidence REAL NOT NULL,
+                outcome TEXT NOT NULL,
+                pnl REAL NOT NULL,
+                lesson TEXT NOT NULL,
+                key_factor TEXT NOT NULL DEFAULT '',
+                applicable_types TEXT NOT NULL DEFAULT '',
+                keywords TEXT NOT NULL DEFAULT ''
+            )
+        """)
+        # FTS5 virtual table for keyword search over reflections
+        self._conn.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS trade_reflections_fts
+            USING fts5(lesson, key_factor, applicable_types, keywords, content=trade_reflections, content_rowid=id)
+        """)
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS signal_outcomes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                resolved_at DATETIME,
+                strategy TEXT NOT NULL,
+                market_id TEXT NOT NULL,
+                token_id TEXT NOT NULL,
+                side TEXT NOT NULL,
+                confidence REAL NOT NULL,
+                predicted_price REAL NOT NULL,
+                entry_price REAL NOT NULL,
+                resolved_price REAL,
+                pnl REAL,
+                brier_score REAL,
+                size REAL NOT NULL,
+                outcome TEXT NOT NULL DEFAULT 'pending'
+            )
+        """)
         self._conn.commit()
 
     # ------------------------------------------------------------------
@@ -305,6 +346,246 @@ class Database:
             created_at=row["created_at"] or "",
             triggered_at=row["triggered_at"],
         )
+
+    # ------------------------------------------------------------------
+    # Trade reflection methods
+    # ------------------------------------------------------------------
+
+    def record_reflection(
+        self,
+        *,
+        strategy: str,
+        market_id: str,
+        market_question: str,
+        side: str,
+        confidence: float,
+        outcome: str,
+        pnl: float,
+        lesson: str,
+        key_factor: str = "",
+        applicable_types: str = "",
+        keywords: str = "",
+    ) -> int:
+        """Record a post-trade reflection and index it for FTS search."""
+        cursor = self._conn.execute(
+            "INSERT INTO trade_reflections"
+            " (strategy, market_id, market_question, side, confidence, outcome, pnl,"
+            "  lesson, key_factor, applicable_types, keywords)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (strategy, market_id, market_question, side, confidence, outcome, pnl,
+             lesson, key_factor, applicable_types, keywords),
+        )
+        row_id = cursor.lastrowid or 0
+        # Sync to FTS index
+        self._conn.execute(
+            "INSERT INTO trade_reflections_fts(rowid, lesson, key_factor, applicable_types, keywords)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (row_id, lesson, key_factor, applicable_types, keywords),
+        )
+        self._conn.commit()
+        return row_id
+
+    def search_reflections(self, query: str, *, limit: int = 5) -> list[dict[str, object]]:
+        """Search past reflections using FTS5 keyword matching.
+
+        Args:
+            query: Search terms (space-separated keywords).
+            limit: Maximum results to return.
+
+        Returns:
+            List of reflection dicts, ranked by FTS relevance.
+        """
+        if not query.strip():
+            return []
+        # Sanitize query for FTS5 (escape special chars)
+        safe_query = " OR ".join(word for word in query.split() if word.strip())
+        if not safe_query:
+            return []
+        try:
+            rows = self._conn.execute(
+                "SELECT r.* FROM trade_reflections r"
+                " JOIN trade_reflections_fts fts ON r.id = fts.rowid"
+                " WHERE trade_reflections_fts MATCH ?"
+                " ORDER BY fts.rank"
+                " LIMIT ?",
+                (safe_query, limit),
+            ).fetchall()
+            return [dict(row) for row in rows]
+        except Exception:
+            return []
+
+    # ------------------------------------------------------------------
+    # Signal outcome methods
+    # ------------------------------------------------------------------
+
+    def record_signal_outcome(
+        self,
+        *,
+        strategy: str,
+        market_id: str,
+        token_id: str,
+        side: str,
+        confidence: float,
+        predicted_price: float,
+        entry_price: float,
+        size: float,
+    ) -> int:
+        """Record a signal outcome when a signal is executed. Returns the row ID."""
+        cursor = self._conn.execute(
+            "INSERT INTO signal_outcomes"
+            " (strategy, market_id, token_id, side, confidence, predicted_price, entry_price, size)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (strategy, market_id, token_id, side, confidence, predicted_price, entry_price, size),
+        )
+        self._conn.commit()
+        return cursor.lastrowid or 0
+
+    def resolve_signal_outcomes(
+        self,
+        market_id: str,
+        resolved_price: float,
+    ) -> int:
+        """Resolve all pending outcomes for a market. Computes P&L and Brier score.
+
+        Returns the number of outcomes resolved.
+        """
+        rows = self._conn.execute(
+            "SELECT id, side, confidence, entry_price, size FROM signal_outcomes"
+            " WHERE market_id = ? AND outcome = 'pending'",
+            (market_id,),
+        ).fetchall()
+
+        resolved_count = 0
+        for row in rows:
+            outcome_id = row["id"]
+            side = row["side"]
+            entry_price = row["entry_price"]
+            confidence = row["confidence"]
+            size = row["size"]
+
+            # P&L: for buys, profit = (resolved - entry) * shares; shares = size / entry
+            if entry_price > 0:
+                shares = size / entry_price
+                if side == "buy":
+                    pnl = (resolved_price - entry_price) * shares
+                else:
+                    pnl = (entry_price - resolved_price) * shares
+            else:
+                pnl = 0.0
+
+            # Brier score: measures calibration. Lower = better.
+            # For a buy signal, the implied prediction is that the event resolves "yes" (price → 1.0)
+            # For a sell signal, the implied prediction is "no" (price → 0.0)
+            if side == "buy":
+                brier_score = (confidence - resolved_price) ** 2
+            else:
+                brier_score = ((1.0 - confidence) - resolved_price) ** 2
+
+            outcome = "win" if pnl > 0 else "loss" if pnl < 0 else "breakeven"
+
+            self._conn.execute(
+                "UPDATE signal_outcomes SET resolved_at = CURRENT_TIMESTAMP,"
+                " resolved_price = ?, pnl = ?, brier_score = ?, outcome = ?"
+                " WHERE id = ?",
+                (resolved_price, round(pnl, 6), round(brier_score, 6), outcome, outcome_id),
+            )
+            resolved_count += 1
+
+        if resolved_count > 0:
+            self._conn.commit()
+        return resolved_count
+
+    def get_strategy_accuracy(self, strategy: str | None = None, min_samples: int = 0) -> list[dict[str, object]]:
+        """Return per-strategy accuracy stats (win_rate, avg_brier, total trades).
+
+        Args:
+            strategy: If provided, return stats only for this strategy.
+            min_samples: Minimum resolved outcomes to include a strategy.
+        """
+        query = """
+            SELECT strategy,
+                   COUNT(*) as total,
+                   SUM(CASE WHEN outcome = 'win' THEN 1 ELSE 0 END) as wins,
+                   AVG(brier_score) as avg_brier,
+                   AVG(pnl) as avg_pnl,
+                   SUM(pnl) as total_pnl
+            FROM signal_outcomes
+            WHERE outcome != 'pending'
+        """
+        params: list[str | int] = []
+        if strategy:
+            query += " AND strategy = ?"
+            params.append(strategy)
+        query += " GROUP BY strategy HAVING COUNT(*) >= ?"
+        params.append(min_samples)
+        query += " ORDER BY total DESC"
+
+        rows = self._conn.execute(query, params).fetchall()
+        results: list[dict[str, object]] = []
+        for row in rows:
+            total = row["total"]
+            wins = row["wins"]
+            results.append({
+                "strategy": row["strategy"],
+                "total": total,
+                "wins": wins,
+                "win_rate": round(wins / total, 4) if total > 0 else 0.0,
+                "avg_brier": round(row["avg_brier"], 6) if row["avg_brier"] is not None else None,
+                "avg_pnl": round(row["avg_pnl"], 4) if row["avg_pnl"] is not None else None,
+                "total_pnl": round(row["total_pnl"], 4) if row["total_pnl"] is not None else None,
+            })
+        return results
+
+    def get_strategy_pnl(self, strategy: str | None = None) -> list[dict[str, object]]:
+        """Return per-strategy P&L summary."""
+        query = """
+            SELECT strategy,
+                   SUM(pnl) as total_pnl,
+                   AVG(pnl) as avg_pnl,
+                   COUNT(*) as total_trades,
+                   SUM(CASE WHEN pnl > 0 THEN pnl ELSE 0 END) as gross_profit,
+                   SUM(CASE WHEN pnl < 0 THEN ABS(pnl) ELSE 0 END) as gross_loss
+            FROM signal_outcomes
+            WHERE outcome != 'pending'
+        """
+        params: list[str] = []
+        if strategy:
+            query += " AND strategy = ?"
+            params.append(strategy)
+        query += " GROUP BY strategy ORDER BY total_pnl DESC"
+
+        rows = self._conn.execute(query, params).fetchall()
+        results: list[dict[str, object]] = []
+        for row in rows:
+            gross_loss = row["gross_loss"] or 0.0
+            results.append({
+                "strategy": row["strategy"],
+                "total_pnl": round(row["total_pnl"] or 0.0, 4),
+                "avg_pnl": round(row["avg_pnl"] or 0.0, 4),
+                "total_trades": row["total_trades"],
+                "gross_profit": round(row["gross_profit"] or 0.0, 4),
+                "gross_loss": round(gross_loss, 4),
+                "profit_factor": round((row["gross_profit"] or 0.0) / gross_loss, 4) if gross_loss > 0 else None,
+            })
+        return results
+
+    def get_resolved_outcomes(self) -> list[dict[str, object]]:
+        """Return all resolved signal outcomes (strategy, confidence, outcome)."""
+        rows = self._conn.execute(
+            "SELECT strategy, confidence, outcome FROM signal_outcomes WHERE outcome != 'pending'"
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_pending_outcomes_by_market(self) -> dict[str, list[dict[str, object]]]:
+        """Return pending signal outcomes grouped by market_id."""
+        rows = self._conn.execute(
+            "SELECT * FROM signal_outcomes WHERE outcome = 'pending' ORDER BY created_at"
+        ).fetchall()
+        result: dict[str, list[dict[str, object]]] = {}
+        for row in rows:
+            market_id = row["market_id"]
+            result.setdefault(market_id, []).append(dict(row))
+        return result
 
     # ------------------------------------------------------------------
     # Config change methods

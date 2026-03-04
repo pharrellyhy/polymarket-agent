@@ -16,9 +16,10 @@ logger = logging.getLogger(__name__)
 class PaperTrader(Executor):
     """Simulated executor that tracks a virtual USDC balance and positions."""
 
-    def __init__(self, starting_balance: float, db: Database) -> None:
+    def __init__(self, starting_balance: float, db: Database, *, slippage_bps: int = 0) -> None:
         self._balance = starting_balance
         self._db = db
+        self._slippage_bps = slippage_bps
         self._positions: dict[str, dict[str, Any]] = {}
 
     def recover_from_db(self) -> None:
@@ -75,8 +76,31 @@ class PaperTrader(Executor):
             positions=dict(self._positions),
         )
 
+    def mark_to_market(self, current_prices: dict[str, float]) -> None:
+        """Update all position values with live market prices.
+
+        Args:
+            current_prices: Mapping of token_id → current market price.
+        """
+        for token_id, pos in self._positions.items():
+            if token_id in current_prices:
+                pos["current_price"] = current_prices[token_id]
+
+    def _apply_slippage(self, price: float, side: str) -> float:
+        """Apply slippage to simulate realistic fill prices.
+
+        Buys fill at a slightly higher price, sells at a slightly lower price.
+        """
+        if self._slippage_bps == 0:
+            return price
+        slip = price * (self._slippage_bps / 10000.0)
+        if side == "buy":
+            return min(price + slip, 0.9999)
+        return max(price - slip, 0.0001)
+
     def _execute_buy(self, signal: Signal) -> Order | None:
         """Execute a buy order. Returns None if insufficient balance."""
+        fill_price = self._apply_slippage(signal.target_price, "buy")
         cost = signal.size
         if cost > self._balance:
             logger.warning(
@@ -86,7 +110,7 @@ class PaperTrader(Executor):
             )
             return None
 
-        shares = signal.size / signal.target_price
+        shares = signal.size / fill_price
         self._balance -= cost
 
         if signal.token_id in self._positions:
@@ -94,14 +118,14 @@ class PaperTrader(Executor):
             existing_shares = pos["shares"]
             existing_avg = pos["avg_price"]
             total_shares = existing_shares + shares
-            pos["avg_price"] = (existing_shares * existing_avg + shares * signal.target_price) / total_shares
+            pos["avg_price"] = (existing_shares * existing_avg + shares * fill_price) / total_shares
             pos["shares"] = total_shares
         else:
             self._positions[signal.token_id] = {
                 "market_id": signal.market_id,
                 "shares": shares,
-                "avg_price": signal.target_price,
-                "current_price": signal.target_price,
+                "avg_price": fill_price,
+                "current_price": fill_price,
                 "opened_at": datetime.now(timezone.utc).isoformat(),
                 "entry_strategy": signal.strategy,
             }
@@ -110,13 +134,13 @@ class PaperTrader(Executor):
             market_id=signal.market_id,
             token_id=signal.token_id,
             side="buy",
-            price=signal.target_price,
+            price=fill_price,
             size=signal.size,
             shares=shares,
         )
 
-        self._log_trade(signal)
-        logger.info("BUY %.2f shares of %s @ %.4f (cost: %.2f)", shares, signal.token_id, signal.target_price, cost)
+        self._log_trade(signal, executed_price=fill_price)
+        logger.info("BUY %.2f shares of %s @ %.4f (cost: %.2f)", shares, signal.token_id, fill_price, cost)
         return order
 
     def _execute_sell(self, signal: Signal) -> Order | None:
@@ -139,7 +163,8 @@ class PaperTrader(Executor):
                     target_price=0.0,
                     size=cost_basis,
                     reason=f"writeoff: price=0, lost {shares_lost:.2f} shares (cost_basis={cost_basis:.2f})",
-                )
+                ),
+                executed_price=0.0,
             )
             logger.warning(
                 "Wrote off position %s (%.2f shares, cost_basis=%.2f)", signal.token_id, shares_lost, cost_basis
@@ -152,20 +177,22 @@ class PaperTrader(Executor):
                 size=0.0,
                 shares=shares_lost,
             )
-        shares_to_sell = signal.size / signal.target_price
+
+        fill_price = self._apply_slippage(signal.target_price, "sell")
+        shares_to_sell = signal.size / fill_price
 
         if shares_to_sell > pos["shares"]:
             # Sell all available shares instead of rejecting
             shares_to_sell = pos["shares"]
 
-        proceeds = shares_to_sell * signal.target_price
+        proceeds = shares_to_sell * fill_price
         self._balance += proceeds
         pos["shares"] -= shares_to_sell
 
         if pos["shares"] <= 0:
             del self._positions[signal.token_id]
         else:
-            pos["current_price"] = signal.target_price
+            pos["current_price"] = fill_price
 
         logged_signal = replace(signal, size=proceeds)
 
@@ -173,29 +200,29 @@ class PaperTrader(Executor):
             market_id=signal.market_id,
             token_id=signal.token_id,
             side="sell",
-            price=signal.target_price,
+            price=fill_price,
             size=proceeds,
             shares=shares_to_sell,
         )
 
-        self._log_trade(logged_signal)
+        self._log_trade(logged_signal, executed_price=fill_price)
         logger.info(
             "SELL %.2f shares of %s @ %.4f (proceeds: %.2f)",
             shares_to_sell,
             signal.token_id,
-            signal.target_price,
+            fill_price,
             proceeds,
         )
         return order
 
-    def _log_trade(self, signal: Signal) -> None:
+    def _log_trade(self, signal: Signal, *, executed_price: float | None = None) -> None:
         """Record a trade in the database."""
         trade = Trade(
             strategy=signal.strategy,
             market_id=signal.market_id,
             token_id=signal.token_id,
             side=signal.side,
-            price=signal.target_price,
+            price=signal.target_price if executed_price is None else executed_price,
             size=signal.size,
             reason=signal.reason,
         )

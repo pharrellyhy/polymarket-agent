@@ -22,7 +22,7 @@ from polymarket_agent.news.google_rss import GoogleRSSProvider
 from polymarket_agent.news.provider import NewsProvider
 from polymarket_agent.news.tavily_client import TavilyProvider
 from polymarket_agent.orders import ConditionalOrder, OrderStatus, OrderType
-from polymarket_agent.position_sizing import PositionSizer
+from polymarket_agent.position_sizing import CalibrationTable, PositionSizer
 from polymarket_agent.strategies.aggregator import aggregate_signals
 from polymarket_agent.strategies.ai_analyst import AIAnalyst
 from polymarket_agent.strategies.arbitrageur import Arbitrageur
@@ -30,6 +30,7 @@ from polymarket_agent.strategies.base import Signal, Strategy
 from polymarket_agent.strategies.cross_platform_arb import CrossPlatformArb
 from polymarket_agent.strategies.exit_manager import ExitManager
 from polymarket_agent.strategies.market_maker import MarketMaker
+from polymarket_agent.strategies.reflection import ReflectionEngine
 from polymarket_agent.strategies.signal_trader import SignalTrader
 from polymarket_agent.strategies.technical_analyst import TechnicalAnalyst
 from polymarket_agent.strategies.whale_follower import WhaleFollower
@@ -77,10 +78,14 @@ class Orchestrator:
         self._news_provider: NewsProvider | None = self._build_news_provider(config)
         self._strategies = self._load_strategies(config.strategies)
         self._exit_manager = ExitManager(config.exit_manager)
+        self._calibration = CalibrationTable()
+        self._calibration.refresh(self._db)
+        self._last_calibration_at: datetime = datetime.now(timezone.utc)
         self._sizer = PositionSizer(
             method=config.position_sizing.method,
             kelly_fraction=config.position_sizing.kelly_fraction,
             max_bet_pct=config.position_sizing.max_bet_pct,
+            calibration=self._calibration,
         )
         self._alerts = self._build_alert_manager(config)
         self._snapshot_interval = config.monitoring.snapshot_interval
@@ -88,6 +93,7 @@ class Orchestrator:
         self._last_signals: list[Signal] = []
         self._last_signals_updated_at: datetime | None = None
         self._exited_tokens: dict[str, datetime] = {}  # token_id -> exit time
+        self._reflection_engine: ReflectionEngine | None = self._build_reflection_engine()
 
     # ------------------------------------------------------------------
     # Public API
@@ -99,6 +105,14 @@ class Orchestrator:
         Returns a summary dict with ``markets_fetched``,
         ``signals_generated``, and ``trades_executed`` counts.
         """
+        # Refresh calibration table hourly
+        self._maybe_refresh_calibration()
+
+        # Check for resolved markets and compute P&L attribution
+        resolutions = self._check_market_resolutions()
+        if resolutions > 0:
+            logger.info("Resolved %d signal outcome(s) from closed markets", resolutions)
+
         # Check conditional orders before regular strategy analysis
         conditional_trades = 0
         if self._config.conditional_orders.enabled and self._config.mode != "monitor":
@@ -108,17 +122,22 @@ class Orchestrator:
         markets = self._apply_focus_filter(markets)
         logger.info("Fetched %d active markets", len(markets))
 
+        # Mark-to-market: update position values with live prices
+        self._mark_positions_to_market()
+
         raw_signals: list[Signal] = []
         for strategy in self._strategies:
             raw_signals.extend(strategy.analyze(markets, self._data))
         logger.info("Generated %d raw signals from %d strategies", len(raw_signals), len(self._strategies))
 
+        strategy_weights = self._compute_strategy_weights() if self._config.aggregation.performance_weighted else None
         signals = aggregate_signals(
             raw_signals,
             min_confidence=self._config.aggregation.min_confidence,
             min_strategies=self._config.aggregation.min_strategies,
             conflict_resolution=self._config.aggregation.conflict_resolution,
             blend_confidence=self._config.aggregation.blend_confidence,
+            strategy_weights=strategy_weights,
         )
         self._cache_signals(signals)
         logger.info("Aggregated to %d signals", len(signals))
@@ -141,7 +160,9 @@ class Orchestrator:
                 order = self._executor.place_order(signal)
                 if order is not None:
                     trades_executed += 1
-                    self._record_signal(signal, status="executed")
+                    self._record_signal(
+                        signal, status="executed", fill_price=order.price, fill_size=order.size,
+                    )
                     self._exited_tokens[signal.token_id] = datetime.now(timezone.utc)
                     self._alerts.alert(
                         f"Exit trade: {signal.side} {signal.size:.2f} USDC on {signal.market_id} ({signal.reason})"
@@ -154,11 +175,14 @@ class Orchestrator:
             risk_snapshot = self._build_risk_snapshot()
             for signal in signals:
                 sized_signal = self._apply_position_sizing(signal)
-                if self.place_order(sized_signal, risk_snapshot=risk_snapshot) is None:
+                order = self.place_order(sized_signal, risk_snapshot=risk_snapshot)
+                if order is None:
                     self._record_signal(sized_signal, status="rejected")
                     continue
                 trades_executed += 1
-                self._record_signal(sized_signal, status="executed")
+                self._record_signal(
+                    sized_signal, status="executed", fill_price=order.price, fill_size=order.size,
+                )
                 self._alerts.alert(
                     f"Trade executed: {sized_signal.side} {sized_signal.size:.2f} USDC "
                     f"on {sized_signal.market_id} ({sized_signal.strategy})"
@@ -228,12 +252,14 @@ class Orchestrator:
                 raw_signals.extend(strategy.analyze(markets, self._data))
             except Exception:
                 logger.exception("Strategy %s failed", getattr(strategy, "name", "unknown"))
+        strategy_weights = self._compute_strategy_weights() if self._config.aggregation.performance_weighted else None
         signals = aggregate_signals(
             raw_signals,
             min_confidence=self._config.aggregation.min_confidence,
             min_strategies=self._config.aggregation.min_strategies,
             conflict_resolution=self._config.aggregation.conflict_resolution,
             blend_confidence=self._config.aggregation.blend_confidence,
+            strategy_weights=strategy_weights,
         )
         self._cache_signals(signals)
         return signals
@@ -272,11 +298,15 @@ class Orchestrator:
         self._config = new_config
         self._news_provider = self._build_news_provider(new_config)
         self._strategies = self._load_strategies(new_config.strategies)
+        self._calibration.refresh(self._db)
+        self._last_calibration_at = datetime.now(timezone.utc)
         self._sizer = PositionSizer(
             method=new_config.position_sizing.method,
             kelly_fraction=new_config.position_sizing.kelly_fraction,
             max_bet_pct=new_config.position_sizing.max_bet_pct,
+            calibration=self._calibration,
         )
+        self._reflection_engine = self._build_reflection_engine()
         self._alerts = self._build_alert_manager(new_config)
         self._exit_manager = ExitManager(new_config.exit_manager)
         self._snapshot_interval = new_config.monitoring.snapshot_interval
@@ -528,6 +558,159 @@ class Orchestrator:
 
         return self._exit_manager.evaluate(portfolio.positions, current_prices)
 
+    def _compute_strategy_weights(self) -> dict[str, float] | None:
+        """Compute performance weights from historical accuracy data.
+
+        Returns a dict mapping strategy name → weight (win_rate with 0.3 floor).
+        Requires at least 20 resolved samples per strategy.
+        Returns None when insufficient data exists (equal weight fallback).
+        """
+        accuracy = self._db.get_strategy_accuracy(min_samples=20)
+        if not accuracy:
+            return None
+
+        weights: dict[str, float] = {}
+        for row in accuracy:
+            strategy = str(row["strategy"])
+            win_rate = float(str(row["win_rate"]))
+            # Floor at 0.3 to prevent any strategy from being completely silenced
+            weights[strategy] = max(win_rate, 0.3)
+
+        return weights if weights else None
+
+    def _build_reflection_engine(self) -> ReflectionEngine | None:
+        """Build and wire a shared ReflectionEngine when reflection is enabled."""
+        analysts = [s for s in self._strategies if isinstance(s, AIAnalyst) and s._reflection_enabled]
+        if not analysts:
+            return None
+
+        for strategy in analysts:
+            if strategy._client is not None:
+                engine = ReflectionEngine(self._db, strategy._call_llm)
+                for analyst in analysts:
+                    analyst.set_reflection_engine(engine)
+                return engine
+        return None
+
+    def _maybe_refresh_calibration(self) -> None:
+        """Refresh the calibration table if more than 1 hour has elapsed."""
+        elapsed = (datetime.now(timezone.utc) - self._last_calibration_at).total_seconds()
+        if elapsed >= 3600:
+            self._calibration.refresh(self._db)
+            self._last_calibration_at = datetime.now(timezone.utc)
+            logger.debug("Refreshed calibration table")
+
+    def _mark_positions_to_market(self) -> None:
+        """Fetch current prices for held positions and update portfolio values."""
+        if not isinstance(self._executor, PaperTrader):
+            return
+        portfolio = self._executor.get_portfolio()
+        if not portfolio.positions:
+            return
+
+        current_prices: dict[str, float] = {}
+        for token_id in portfolio.positions:
+            try:
+                spread = self._data.get_price(token_id)
+                current_prices[token_id] = spread.bid
+            except Exception:
+                logger.debug("Failed to fetch price for %s during mark-to-market", token_id)
+
+        if current_prices:
+            self._executor.mark_to_market(current_prices)
+
+    def _check_market_resolutions(self) -> int:
+        """Detect closed/resolved markets and compute P&L for pending outcomes.
+
+        Queries pending signal outcomes, checks if their markets have resolved,
+        and calls resolve_signal_outcomes with the final price.
+
+        Returns the total number of outcomes resolved.
+        """
+        pending_by_market = self._db.get_pending_outcomes_by_market()
+        if not pending_by_market:
+            return 0
+
+        total_resolved = 0
+        for market_id in pending_by_market:
+            try:
+                market = self._data.get_market(market_id)
+            except Exception:
+                logger.debug("Cannot fetch market %s for resolution check", market_id)
+                continue
+
+            if market is None or not market.closed:
+                continue
+
+            # Determine resolved price from market outcome prices
+            resolved_price = self._get_resolved_price(market)
+            if resolved_price is None:
+                continue
+
+            count = self._db.resolve_signal_outcomes(market_id, resolved_price)
+            if count > 0:
+                logger.info(
+                    "Market %s resolved at %.4f — resolved %d outcome(s)",
+                    market_id,
+                    resolved_price,
+                    count,
+                )
+                total_resolved += count
+
+                # Trigger reflections for resolved outcomes
+                if self._reflection_engine is not None:
+                    for outcome_row in pending_by_market[market_id]:
+                        self._trigger_reflection(outcome_row, market, resolved_price)
+
+        return total_resolved
+
+    def _trigger_reflection(
+        self,
+        outcome_row: dict[str, object],
+        market: Market,
+        resolved_price: float,
+    ) -> None:
+        """Generate a reflection for a resolved signal outcome (best effort)."""
+        if self._reflection_engine is None:
+            return
+        try:
+            entry_price = float(str(outcome_row.get("entry_price", 0)))
+            size = float(str(outcome_row.get("size", 0)))
+            confidence = float(str(outcome_row.get("confidence", 0)))
+            side = str(outcome_row.get("side", "buy"))
+
+            if entry_price > 0:
+                shares = size / entry_price
+                pnl = (resolved_price - entry_price) * shares if side == "buy" else (entry_price - resolved_price) * shares
+            else:
+                pnl = 0.0
+
+            self._reflection_engine.reflect_on_outcome(
+                market_question=market.question,
+                strategy=str(outcome_row.get("strategy", "unknown")),
+                market_id=str(outcome_row.get("market_id", "")),
+                side=side,
+                confidence=confidence,
+                predicted_price=float(str(outcome_row.get("predicted_price", 0))),
+                actual_result=resolved_price,
+                pnl=pnl,
+                entry_reason=f"confidence={confidence:.2f}, entry={entry_price:.4f}",
+            )
+        except Exception:
+            logger.debug("Failed to trigger reflection for outcome %s", outcome_row.get("id"), exc_info=True)
+
+    @staticmethod
+    def _get_resolved_price(market: Market) -> float | None:
+        """Extract the final resolved price from a closed market.
+
+        For closed markets, outcome_prices reflect the final resolution:
+        [1.0, 0.0] for Yes, [0.0, 1.0] for No. Returns the Yes token price.
+        Returns None if outcome prices are unavailable.
+        """
+        if market.outcome_prices:
+            return market.outcome_prices[0]
+        return None
+
     @staticmethod
     def _compute_config_diff(old: AppConfig, new: AppConfig) -> dict[str, dict[str, Any]]:
         """Recursively compare two configs, returning changed dotted paths."""
@@ -552,7 +735,11 @@ class Orchestrator:
             from polymarket_agent.execution.live import LiveTrader  # noqa: PLC0415
 
             return LiveTrader.from_env(db=db)
-        executor = PaperTrader(starting_balance=config.starting_balance, db=db)
+        executor = PaperTrader(
+            starting_balance=config.starting_balance,
+            db=db,
+            slippage_bps=config.paper_trading.slippage_bps,
+        )
         executor.recover_from_db()
         return executor
 
@@ -597,7 +784,7 @@ class Orchestrator:
 
         snapshot = risk_snapshot if risk_snapshot is not None else self._build_risk_snapshot()
         daily_loss = snapshot.daily_loss
-        if daily_loss >= risk.max_daily_loss and self._config.mode != "paper":
+        if daily_loss >= risk.max_daily_loss:
             return f"daily_loss {daily_loss:.2f} >= max_daily_loss {risk.max_daily_loss}"
 
         open_count = snapshot.open_orders
@@ -636,8 +823,20 @@ class Orchestrator:
             manager.register(WebhookAlertSink(url))
         return manager
 
-    def _record_signal(self, signal: Signal, *, status: str) -> None:
-        """Log a signal event to the DB (best effort)."""
+    def _record_signal(
+        self,
+        signal: Signal,
+        *,
+        status: str,
+        fill_price: float | None = None,
+        fill_size: float | None = None,
+    ) -> None:
+        """Log a signal event to the DB (best effort).
+
+        When status is 'executed', also records a signal outcome for P&L tracking.
+        Uses fill_price/fill_size from the actual execution when available (e.g.
+        under slippage the fill price differs from signal.target_price).
+        """
         try:
             self._db.record_signal(
                 strategy=signal.strategy,
@@ -650,6 +849,23 @@ class Orchestrator:
             )
         except Exception:
             logger.debug("Failed to record signal", exc_info=True)
+
+        if status == "executed":
+            actual_price = fill_price if fill_price is not None else signal.target_price
+            actual_size = fill_size if fill_size is not None else signal.size
+            try:
+                self._db.record_signal_outcome(
+                    strategy=signal.strategy,
+                    market_id=signal.market_id,
+                    token_id=signal.token_id,
+                    side=signal.side,
+                    confidence=signal.confidence,
+                    predicted_price=signal.target_price,
+                    entry_price=actual_price,
+                    size=actual_size,
+                )
+            except Exception:
+                logger.debug("Failed to record signal outcome", exc_info=True)
 
     def _record_portfolio_snapshot(self) -> None:
         """Persist a portfolio snapshot to the DB, respecting snapshot_interval."""

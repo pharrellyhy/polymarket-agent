@@ -63,6 +63,13 @@ class HistoricalDataProvider:
             markets.append(self._step_to_market(step))
         return markets
 
+    def get_market(self, market_id: str) -> Market | None:
+        """Return a market by ID from current time step, or None if not found."""
+        for step in reversed(self._current_steps()):
+            if step.market_id == market_id:
+                return self._step_to_market(step)
+        return None
+
     def get_orderbook(self, token_id: str) -> OrderBook:
         """Synthesize an orderbook from the current price for a token."""
         price = self._current_price(token_id)

@@ -1,6 +1,135 @@
 # Polymarket Agent — Handoff Document
 
-Last updated: 2026-03-03
+Last updated: 2026-03-04
+
+---
+
+## Session Entry — 2026-03-04 (Review Pass 3: Simplification + Robustness Fixes)
+
+### Problem
+- The newly added slippage path executed at fill prices, but `trades.price` still logged target price, creating audit/analytics drift.
+- `CalibrationTable._confidence_to_bin()` did not clamp negative confidences, which could produce invalid negative bin keys.
+- `reload_config()` rebuilt strategies/sizer but did not rebuild reflection wiring, so stale `ReflectionEngine` state could survive strategy reloads.
+
+### Solution
+- Updated `PaperTrader` trade logging to persist executed fill prices in DB records.
+- Hardened calibration binning to clamp confidence values to `[0, 9]` bins defensively.
+- Rebuilt reflection engine wiring during hot reload and reset calibration refresh timestamp after reload refresh.
+- Removed unused `kelly_size_calibrated()` helper from `PositionSizer` to reduce redundant API surface.
+
+### Edits
+- `src/polymarket_agent/execution/paper.py`
+  - `_log_trade()` now accepts `executed_price` and logs actual fill price.
+  - Buy/sell/writeoff paths pass the executed fill price into trade logging.
+- `src/polymarket_agent/position_sizing.py`
+  - `_confidence_to_bin()` now clamps lower bound (`max(..., 0)`).
+  - Removed unused `kelly_size_calibrated()` method.
+- `src/polymarket_agent/orchestrator.py`
+  - `reload_config()` now rebuilds `_reflection_engine` and resets `_last_calibration_at`.
+  - Simplified `_build_reflection_engine()` to wire only reflection-enabled AI analysts.
+- `tests/test_paper_trader.py`
+  - Added `test_paper_trader_logs_fill_price_with_slippage`.
+- `tests/test_position_sizing.py`
+  - Extended bin-boundary test with negative-confidence clamp assertion.
+- `tests/test_config_reload.py`
+  - Added `test_reload_config_rebuilds_reflection_engine`.
+
+### NOT Changed
+- No changes to strategy scoring, signal generation semantics, or execution risk rules.
+- No schema changes and no new CLI commands.
+
+### Verification
+```bash
+uv run pytest tests/test_paper_trader.py::test_paper_trader_logs_fill_price_with_slippage \
+  tests/test_position_sizing.py::TestCalibrationTable::test_confidence_to_bin_boundaries \
+  tests/test_config_reload.py::test_reload_config_rebuilds_reflection_engine -q
+# 3 passed
+
+uv run pytest tests/test_paper_trader.py tests/test_position_sizing.py tests/test_config_reload.py -q
+# 51 passed
+
+uv run ruff check src/polymarket_agent/execution/paper.py src/polymarket_agent/position_sizing.py src/polymarket_agent/orchestrator.py tests/test_paper_trader.py tests/test_position_sizing.py tests/test_config_reload.py
+# All checks passed
+
+uv run mypy src/polymarket_agent/execution/paper.py src/polymarket_agent/position_sizing.py src/polymarket_agent/orchestrator.py
+# Success: no issues found in 3 source files
+```
+
+### Branch
+- Working branch: `main`
+
+---
+
+## Session Entry — 2026-03-04 (P&L Improvements: 7-Phase TradingAgents-Inspired Implementation)
+
+### Problem
+- No signal outcome tracking or P&L attribution — impossible to know which strategy makes or loses money.
+- Paper trader overstated performance by 2-5% (no slippage modeling).
+- `max_daily_loss` bypassed in paper mode; mark-to-market missing; Sharpe annualization used hardcoded `sqrt(252)`.
+- AIAnalyst used single LLM call — no adversarial debate to reduce overconfidence.
+- Kelly criterion used raw sigmoid confidence as P(win) instead of calibrated historical win rate.
+- No post-trade reflection or institutional memory across resolved trades.
+- Signal aggregation used all-or-nothing conflict resolution with equal strategy weights.
+
+### Solution
+Implemented 7-phase P&L improvement plan (`docs/plans/2026-03-04-pnl-improvements-tradingagents.md`) inspired by TauricResearch/TradingAgents:
+
+**Phase A — Signal Outcome Tracking:** Added `signal_outcomes` table with Brier score computation. `strategy-stats` CLI command for per-strategy accuracy/P&L reporting. Outcome recording uses actual fill price/size from Orders (not target values).
+
+**Phase B — Slippage Modeling:** PaperTrader applies configurable `slippage_bps` (default 50 = 0.5%). Buy fills higher, sell fills lower. `PaperTradingConfig` with Pydantic-bounded `slippage_bps` (0-10000).
+
+**Phase C — Mark-to-Market & Risk:** Added `mark_to_market(current_prices)` to PaperTrader. Removed paper mode bypass on `max_daily_loss`. Fixed Sharpe annualization to use actual snapshot timestamps.
+
+**Phase D — Adversarial Debate:** Bull/bear/judge LLM debate pattern with anti-hold bias prompt. Toggled via `debate_mode` config. 3x LLM cost but higher-quality signals.
+
+**Phase E — Kelly Calibration:** `CalibrationTable` maps `(strategy, confidence_bin)` → historical win rate. Falls back to raw confidence with <20 samples. Refreshes hourly via public `db.get_resolved_outcomes()` method.
+
+**Phase F — Reflection & Memory:** `ReflectionEngine` generates LLM-based post-trade reflections. SQLite FTS5 full-text search for retrieving relevant past lessons. Lessons injected into AIAnalyst prompts.
+
+**Phase G — Weighted Aggregation:** Performance-weighted confidence blending and conflict resolution. Higher-weight side wins conflicts instead of suppressing both. Backward compatible when `strategy_weights=None`.
+
+**Codex Review Fixes:** Addressed 4 of 12 findings:
+- #1 (HIGH): Outcome recording uses actual fill price/size from Orders
+- #3 (MEDIUM): Sell-side shares computed from fill_price (not target_price)
+- #6 (MEDIUM): `slippage_bps` bounded with `Field(ge=0, le=10000)`
+- #8 (MEDIUM): `CalibrationTable.refresh()` uses public `db.get_resolved_outcomes()` instead of `db._conn`
+
+### Edits
+- `src/polymarket_agent/db.py` — added `signal_outcomes` table, `trade_reflections` table with FTS5 index; methods: `record_signal_outcome()`, `resolve_signal_outcomes()`, `get_strategy_accuracy()`, `get_strategy_pnl()`, `get_pending_outcomes_by_market()`, `get_resolved_outcomes()`, `record_reflection()`, `search_reflections()`
+- `src/polymarket_agent/orchestrator.py` — `_record_signal()` accepts `fill_price`/`fill_size`; `tick()` calls `_maybe_refresh_calibration()`, `_check_market_resolutions()`, `_mark_positions_to_market()`; added `_trigger_reflection()`, `_compute_strategy_weights()`, `_build_reflection_engine()`; removed paper mode bypass on `max_daily_loss`; passes `strategy_weights` to `aggregate_signals()`
+- `src/polymarket_agent/config.py` — added `PaperTradingConfig(slippage_bps)`, `paper_trading` field on `AppConfig`, `performance_weighted` on `AggregationConfig`
+- `src/polymarket_agent/execution/paper.py` — added `slippage_bps` param, `_apply_slippage()`, `mark_to_market()`; sell path uses `fill_price` for shares computation
+- `src/polymarket_agent/position_sizing.py` — added `CalibrationTable` class with `refresh()`, `calibrated_confidence()`; `PositionSizer` accepts optional `calibration` param
+- `src/polymarket_agent/strategies/aggregator.py` — added `strategy_weights` param for weighted confidence blending and conflict resolution
+- `src/polymarket_agent/strategies/debate.py` — **NEW** `DebateResult`, `run_debate()` with bull/bear/judge LLM calls
+- `src/polymarket_agent/strategies/reflection.py` — **NEW** `ReflectionEngine` with `reflect_on_outcome()`, `retrieve_relevant_lessons()`, FTS5 search
+- `src/polymarket_agent/strategies/ai_analyst.py` — added `debate_mode`, `reflection_enabled`, `set_reflection_engine()`; debate branches to `_evaluate_with_debate()`
+- `src/polymarket_agent/backtest/metrics.py` — fixed `_compute_sharpe_ratio()` to use `_estimate_periods_per_year()` from timestamps
+- `src/polymarket_agent/data/provider.py` — added `get_market()` to DataProvider protocol
+- `src/polymarket_agent/backtest/historical.py` — added `get_market()` implementation
+- `src/polymarket_agent/cli.py` — added `strategy-stats` command with `--strategy`, `--json` options
+- `tests/test_db.py` — 10 new tests for signal outcomes
+- `tests/test_paper_trader.py` — 5 new tests (slippage + mark-to-market)
+- `tests/test_debate.py` — **NEW** 8 tests
+- `tests/test_reflection.py` — **NEW** 7 tests
+- `tests/test_position_sizing.py` — 5 new tests for CalibrationTable
+- `tests/test_aggregator.py` — 5 new tests for weighted aggregation
+- `tests/test_risk_gate.py` — updated daily loss test to expect enforcement in paper mode
+
+### NOT Changed
+- No changes to existing strategy scoring logic (SignalTrader, MarketMaker, Arbitrageur, TechnicalAnalyst)
+- No changes to MCP server or dashboard
+- No changes to CLI commands other than adding `strategy-stats`
+- No changes to WhaleFollower, CrossPlatformArb, or enrichment modules
+
+### Verification
+```bash
+uv run pytest tests/ -v              # 489 passed in 12.30s
+uv run ruff check src/               # All checks passed
+```
+
+### Branch
+- Working branch: `main`
 
 ---
 
@@ -469,108 +598,28 @@ uv run mypy src/polymarket_agent/orchestrator.py  # Success: no issues found in 
 
 ---
 
-## Session Entry — 2026-02-28 (CLI Resilience, Gamma API Fallback, Paper Mode Tuning)
-
-### Problem
-- The `polymarket` CLI intermittently failed with exit code 1, crashing the entire trading loop on transient errors.
-- The focus filter only searched CLI results (top ~50 markets by volume), so niche events like "US strikes Iran by...?" were invisible.
-- Daily loss limits blocked all trades in paper mode, slowing iteration.
-- Kelly position sizing produced near-zero bet sizes when confidence/divergence was tiny.
-- Config thresholds (min_confidence, min_divergence) were too high for focused single-event trading.
-
-### Solution
-- **CLI retry logic:** `_run_cli()` now retries up to 3 times with 1s sleep between attempts on non-zero exit codes. Timeouts still raise immediately.
-- **Tick error resilience:** Wrapped `orch.tick()` in try/except in the `run` loop so transient failures don't kill the continuous loop.
-- **Gamma API fallback:** `_apply_focus_filter()` falls back to `_fetch_focus_markets_from_api()` when CLI results have no matches. Converts search queries to slugs and queries `https://gamma-api.polymarket.com/events?slug=...` with suffix variants (`-by`, `-in`) for bracket events.
-- **Max brackets limiting:** New `FocusConfig.max_brackets` field (default 5). Sorts filtered bracket markets by `end_date` and keeps only the nearest N.
-- **Daily loss bypass in paper mode:** `_check_risk()` skips the daily loss gate when `config.mode == "paper"`.
-- **Config tuning:** Switched to fixed position sizing ($5), lowered min_divergence to 0.01, min_confidence to 0.01, enabled Tavily news with 600s cache.
-- **Tavily dependency:** Added `tavily-python>=0.7.22` to pyproject.toml.
-
-### Edits
-- `src/polymarket_agent/data/client.py` — added retry loop (3 attempts, 1s sleep) to `_run_cli()`
-- `src/polymarket_agent/cli.py` — wrapped `orch.tick()` in try/except for loop resilience
-- `src/polymarket_agent/orchestrator.py` — added `_fetch_focus_markets_from_api()` static method with Gamma API slug lookup; added max_brackets limiting in `_apply_focus_filter()`; bypassed daily loss check in paper mode
-- `src/polymarket_agent/config.py` — added `max_brackets: int = 5` to `FocusConfig`
-- `config.yaml` — Iran focus config, Tavily news, fixed sizing, lower thresholds, 10s polling
-- `pyproject.toml` — added `tavily-python>=0.7.22` dependency
-- `uv.lock` — updated lockfile
-- `tests/test_risk_gate.py` — updated `test_risk_gate_blocks_when_daily_loss_exceeded` → `test_risk_gate_skips_daily_loss_in_paper_mode` to match new paper mode behavior
-
-### NOT Changed
-- No changes to strategy logic (AI Analyst, TechnicalAnalyst, SignalTrader, etc.)
-- No changes to news provider implementations or indicator computations
-- No DB schema changes
-- No changes to MCP server or dashboard
-
-### Verification
-```bash
-uv run pytest tests/ -v                     # 393 passed
-uv run pytest tests/test_risk_gate.py -v    # 10 passed (updated daily loss test)
-ruff check src/                              # All checks passed
-```
-
-### Branch
-- Working branch: `main`
-
----
-
-## Session Entry — 2026-02-28 (Review Follow-Up: Focus Filter + Research Simplification)
-
-### Problem
-- Review of the latest focus-trading/research code found two correctness and maintainability issues:
-  - `focus.search_queries` values containing only whitespace could filter out all markets when focus was enabled.
-  - Focus selectors (`search_queries`, `market_slugs`, `market_ids`) were not trimmed/normalized, so values with extra spaces failed to match.
-- The new `research` CLI command had avoidable complexity (redundant grouping flow, repeated sorting/label logic, brittle reason-field parsing).
-
-### Solution
-- **Focus filter normalization:** Updated `_apply_focus_filter()` to trim selectors, ignore empty values, and use a single OR check per market with less repeated string work.
-- **TDD regression coverage:** Added two orchestrator tests that failed first, then passed after the fix:
-  - blank query handling
-  - whitespace normalization for slug/query matching
-- **Research command simplification:** Reduced grouping logic to a direct prefix bucket map, removed repeated sort calls, centralized label extraction, and replaced split-chain parsing with a small key/value extractor helper.
-
-### Edits
-- `src/polymarket_agent/orchestrator.py` — simplified and hardened `_apply_focus_filter()` (trim/normalize/ignore-empty selectors)
-- `src/polymarket_agent/cli.py` — simplified `research` grouping/display flow and reason parsing helpers
-- `tests/test_orchestrator.py` — added:
-  - `test_focus_filter_ignores_blank_queries`
-  - `test_focus_filter_normalizes_slug_and_query_whitespace`
-
-### NOT Changed
-- No changes to trading strategy math or aggregation thresholds.
-- No changes to DB schema, execution layer, or market data client subprocess behavior.
-- No config defaults changed in this follow-up.
-
-### Verification
-```bash
-uv run python -m pytest tests/test_orchestrator.py::test_focus_filter_ignores_blank_queries tests/test_orchestrator.py::test_focus_filter_normalizes_slug_and_query_whitespace -q  # failed first, then passed after fix
-uv run python -m pytest tests/test_orchestrator.py tests/test_cli.py -q  # 12 passed
-ruff check src/polymarket_agent/orchestrator.py src/polymarket_agent/cli.py tests/test_orchestrator.py  # All checks passed
-uv run mypy src/polymarket_agent/orchestrator.py src/polymarket_agent/cli.py  # Success: no issues found in 2 source files
-```
-
-### Branch
-- Working branch: `main`
-
----
-
 ## Project Summary
 
 **Polymarket Agent** is a Python auto-trading pipeline for Polymarket prediction markets. It wraps the official `polymarket` CLI (v0.1.4, installed via Homebrew) into a structured system with pluggable trading strategies, paper/live execution, and MCP server integration for AI agents.
 
-## Current State: Phase 4 COMPLETE + Strategy Research Improvements
+## Current State: Phase 4 COMPLETE + Strategy Research + P&L Improvements
 
-- 447 tests passing, ruff lint clean, mypy strict clean
+- 489 tests passing, ruff lint clean, mypy strict clean
 - All 4 strategies implemented: SignalTrader, MarketMaker, Arbitrageur, AIAnalyst
 - Signal aggregation integrated (groups by market+token+side, unique strategy consensus)
 - MCP server with 14 tools: search_markets, get_market_detail, get_price_history, get_leaderboard, get_portfolio, get_signals, refresh_signals, place_trade, analyze_market, get_event, get_price, get_spread, get_volume, get_positions
 - LiveTrader with py-clob-client for real order execution
 - Risk management: max_position_size, max_daily_loss, max_open_orders enforced in Orchestrator
-- CLI commands: `run` (with `--live` safety flag + config hot-reload), `status`, `tick`, `research`, `report`, `evaluate`, `backtest`, `dashboard`, `mcp`
+- CLI commands: `run` (with `--live` safety flag + config hot-reload), `status`, `tick`, `research`, `report`, `evaluate`, `backtest`, `dashboard`, `mcp`, `strategy-stats`
 - Focus trading: configurable market filtering by search queries, IDs, or slugs; bracket market context for AI analyst
 - Auto-tune pipeline: `scripts/autotune.sh` + launchd plist for periodic Claude Code-driven config tuning
 - Exit manager: automatic position exits via profit target, stop loss, signal reversal, and staleness rules
+- P&L attribution: signal outcome tracking with Brier scores, per-strategy accuracy/P&L reporting
+- Adversarial debate: bull/bear/judge LLM debate pattern for higher-quality AIAnalyst signals
+- Reflection memory: post-trade LLM reflection with FTS5 retrieval for institutional learning
+- Kelly calibration: historical win-rate calibration table for position sizing
+- Slippage modeling: configurable basis-point slippage in paper trading
+- Performance-weighted aggregation: strategy weights from historical accuracy
 
 ## Architecture
 
@@ -731,12 +780,13 @@ See `docs/plans/2026-02-26-polymarket-agent-phase3.md` for detailed plan with 6 
 - `docs/plans/2026-03-03-strategy-research-improvements.md` — Strategy research improvements (Phases 1–3 implemented, Phases 4–8 planned)
 - `docs/plans/2026-03-03-paper-trading-test-plan-design.md` — Paper-trading A/B test plan design
 - `docs/plans/2026-03-03-paper-trading-test-plan.md` — Paper-trading test plan implementation
+- `docs/plans/2026-03-04-pnl-improvements-tradingagents.md` — P&L improvements plan (7 phases, all implemented)
 
 ## Verification Commands
 
 ```bash
 # Everything should pass
-uv run pytest tests/ -v           # 447 tests passing
+uv run pytest tests/ -v           # 489 tests passing
 uv run ruff check src/            # All checks passed
 uv run mypy src/                  # Success: no issues found in 35 source files
 uv run polymarket-agent tick      # Fetches live data, paper trades (focus-filtered)

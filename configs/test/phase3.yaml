@@ -4,14 +4,17 @@ starting_balance: 100.0
 poll_interval: 10
 strategies:
   signal_trader:
-    enabled: false
+    enabled: true
+    volume_threshold: 10000
+    price_move_threshold: 0.05
   market_maker:
     enabled: false
   arbitrageur:
     enabled: false
   ai_analyst:
     enabled: true
-    model: qwen/qwen3.5-35b-a3b
+    model: openai/gpt-oss-120b
+    # model: qwen/qwen3.5-9b
     max_calls_per_hour: 5000
     min_divergence: 0.10
     min_price: 0.05
@@ -43,7 +46,7 @@ strategies:
     enabled: false
 aggregation:
   min_confidence: 0.40
-  min_strategies: 2
+  min_strategies: 1
   conflict_resolution: true
   blend_confidence: true
 risk:

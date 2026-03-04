@@ -24,6 +24,7 @@ class AggregationConfig(BaseModel):
     min_strategies: int = 1
     conflict_resolution: bool = True
     blend_confidence: bool = True
+    performance_weighted: bool = False
 
 
 class ConditionalOrderConfig(BaseModel):
@@ -34,6 +35,12 @@ class ConditionalOrderConfig(BaseModel):
     default_take_profit_pct: float = 0.20
     trailing_stop_enabled: bool = False
     trailing_stop_pct: float = 0.05
+
+
+class PaperTradingConfig(BaseModel):
+    """Paper trading simulation configuration."""
+
+    slippage_bps: int = Field(default=50, ge=0, le=10000)
 
 
 class PositionSizingConfig(BaseModel):
@@ -106,6 +113,7 @@ class AppConfig(BaseModel):
     risk: RiskConfig = Field(default_factory=RiskConfig)
     conditional_orders: ConditionalOrderConfig = Field(default_factory=ConditionalOrderConfig)
     position_sizing: PositionSizingConfig = Field(default_factory=PositionSizingConfig)
+    paper_trading: PaperTradingConfig = Field(default_factory=PaperTradingConfig)
     backtest: BacktestConfig = Field(default_factory=BacktestConfig)
     exit_manager: ExitManagerConfig = Field(default_factory=ExitManagerConfig)
     monitoring: MonitoringConfig = Field(default_factory=MonitoringConfig)
