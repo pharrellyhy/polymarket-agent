@@ -158,6 +158,29 @@ def test_ai_analyst_sanitizes_market_text() -> None:
     assert len(prompt_content) < 2500
 
 
+def test_ai_analyst_reflection_prompt_uses_attached_engine() -> None:
+    """Reflection enrichment should use the attached engine interface directly."""
+
+    class _FakeReflectionEngine:
+        def retrieve_relevant_lessons(self, market_question: str) -> list[dict[str, object]]:
+            return [{"lesson": f"Lesson for {market_question}"}]
+
+        @staticmethod
+        def format_lessons_for_prompt(lessons: list[dict[str, object]]) -> str:
+            if not lessons:
+                return ""
+            return "--- PAST LESSONS ---\n- synthetic lesson"
+
+    strategy = _make_analyst("0.80", reflection_enabled=True)
+    strategy.set_reflection_engine(_FakeReflectionEngine())
+
+    strategy.analyze([_make_market("1", yes_price=0.50)], MagicMock())
+    call_args = strategy._client.messages.create.call_args
+    prompt_content: str = call_args[1]["messages"][0]["content"]
+
+    assert "PAST LESSONS" in prompt_content
+
+
 # ------------------------------------------------------------------
 # OpenAI provider tests
 # ------------------------------------------------------------------
@@ -384,3 +407,36 @@ def test_prompt_uses_configured_news_max_results() -> None:
 
     assert news_provider.search.call_count == 1
     assert news_provider.search.call_args.kwargs["max_results"] == 3
+
+
+# ------------------------------------------------------------------
+# max_tokens configuration tests
+# ------------------------------------------------------------------
+
+
+def test_max_tokens_defaults_to_1024() -> None:
+    """max_tokens should default to 1024 when not configured."""
+    strategy = AIAnalyst()
+    assert strategy._max_tokens == 1024
+
+
+def test_max_tokens_configurable_anthropic() -> None:
+    """Configured max_tokens should flow through to the Anthropic LLM call."""
+    strategy = _make_analyst("0.80", max_tokens=2048)
+    assert strategy._max_tokens == 2048
+
+    strategy.analyze([_make_market("1", yes_price=0.50)], MagicMock())
+
+    call_kwargs = strategy._client.messages.create.call_args[1]
+    assert call_kwargs["max_tokens"] == 2048
+
+
+def test_max_tokens_configurable_openai() -> None:
+    """Configured max_tokens should flow through to the OpenAI LLM call."""
+    strategy = _make_openai_analyst("0.80", max_tokens=4096, structured_prompt=True)
+    assert strategy._max_tokens == 4096
+
+    strategy.analyze([_make_market("1", yes_price=0.50)], MagicMock())
+
+    call_kwargs = strategy._client.chat.completions.create.call_args[1]
+    assert call_kwargs["max_tokens"] == 4096

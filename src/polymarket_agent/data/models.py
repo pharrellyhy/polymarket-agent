@@ -35,6 +35,30 @@ def _float_field_first(data: dict[str, Any], *keys: str) -> float:
     return 0.0
 
 
+_CATEGORY_KEYWORDS: dict[str, list[str]] = {
+    "politics": ["president", "election", "congress", "senate", "trump", "biden", "vote", "governor", "political", "democrat", "republican", "poll", "cabinet", "impeach", "legislation", "bill", "law", "supreme court", "executive order", "tariff"],
+    "crypto": ["bitcoin", "ethereum", "crypto", "btc", "eth", "solana", "blockchain", "token", "defi", "nft", "stablecoin", "altcoin"],
+    "finance": ["stock", "s&p", "nasdaq", "fed", "interest rate", "inflation", "gdp", "recession", "bond", "treasury", "dow", "market cap", "ipo", "earnings"],
+    "tech": ["ai ", "artificial intelligence", "openai", "google", "apple", "microsoft", "meta", "amazon", "spacex", "tesla", "chip", "semiconductor", "robot"],
+    "sports": ["nba", "nfl", "mlb", "nhl", "soccer", "football", "basketball", "baseball", "hockey", "championship", "super bowl", "world cup", "olympics", "quarterback", "touchdown", "mvp", "playoff", "finals"],
+    "entertainment": ["oscar", "grammy", "emmy", "movie", "album", "box office", "celebrity", "netflix", "disney", "streaming", "concert", "tour"],
+    "science": ["climate", "earthquake", "hurricane", "pandemic", "vaccine", "nasa", "space", "moon", "mars", "outbreak", "species", "research"],
+}
+
+
+def categorize_market(market: "Market") -> str:
+    """Categorize a market by matching keywords in its question.
+
+    Returns the first matching category (priority order: politics > crypto >
+    finance > tech > sports > entertainment > science) or "other".
+    """
+    question = market.question.lower()
+    for category, keywords in _CATEGORY_KEYWORDS.items():
+        if any(kw in question for kw in keywords):
+            return category
+    return "other"
+
+
 class Market(BaseModel):
     """A single prediction market."""
 
@@ -52,6 +76,8 @@ class Market(BaseModel):
     description: str = ""
     clob_token_ids: list[str] = Field(default_factory=list)
     volume_24h: float = 0.0
+    one_day_price_change: float = 0.0
+    is_new: bool = False
     group_item_title: str = ""
 
     @classmethod
@@ -72,6 +98,8 @@ class Market(BaseModel):
             description=_str_field(data, "description"),
             clob_token_ids=_parse_json_field(data, "clobTokenIds"),
             volume_24h=_float_field(data, "volume24hr"),
+            one_day_price_change=_float_field(data, "oneDayPriceChange"),
+            is_new=bool(data.get("new", False)),
             group_item_title=_str_field(data, "groupItemTitle"),
         )
 

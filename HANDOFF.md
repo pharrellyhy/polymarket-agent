@@ -1,6 +1,89 @@
 # Polymarket Agent — Handoff Document
 
-Last updated: 2026-03-04
+Last updated: 2026-03-05
+
+---
+
+## Session Entry — 2026-03-05 (Review Pass 4: Reflection Prompt Simplification)
+
+### Problem
+- Reflection prompt enrichment in `AIAnalyst` used a runtime import plus strict `isinstance(ReflectionEngine)` gating.
+- That added unnecessary branching and made the integration harder to test with compatible engines/stubs.
+
+### Solution
+- Simplified the reflection path to use the attached engine interface directly (duck-typed method calls) inside the existing best-effort `try/except`.
+- Removed the runtime import/type gate without changing fallback behavior: failures still degrade gracefully and skip lesson enrichment.
+- Added a focused regression test that failed before the change and now passes.
+
+### Edits
+- `src/polymarket_agent/strategies/ai_analyst.py`
+  - Simplified reflection enrichment block in `_evaluate()`:
+    - removed inline `ReflectionEngine` import
+    - removed `isinstance` check
+    - now calls `retrieve_relevant_lessons()` and `format_lessons_for_prompt()` directly on the attached engine
+- `tests/test_ai_analyst.py`
+  - Added `test_ai_analyst_reflection_prompt_uses_attached_engine`
+
+### NOT Changed
+- No changes to signal direction, confidence math, debate mode, or rate limiting.
+- No config or schema changes.
+
+### Verification
+```bash
+uv run pytest tests/test_ai_analyst.py::test_ai_analyst_reflection_prompt_uses_attached_engine -q
+# 1 passed
+
+uv run pytest tests/test_ai_analyst.py -q
+# 30 passed
+
+uv run ruff check src/polymarket_agent/strategies/ai_analyst.py tests/test_ai_analyst.py
+# All checks passed
+
+uv run mypy src/polymarket_agent/strategies/ai_analyst.py
+# Success: no issues found in 1 source file
+```
+
+### Branch
+- Working branch: `main`
+
+---
+
+## Session Entry — 2026-03-05 (Market Filtering Preferences + Configurable max_tokens)
+
+### Problem
+- Agent analyzes all 50 markets equally, including sports markets where the LLM has no edge, causing portfolio bleed.
+- `max_tokens` was hardcoded at 1024 in AIAnalyst LLM calls, not configurable via YAML.
+
+### Solution
+- Added market categorization (`categorize_market()`) with keyword-based classification (politics, crypto, finance, tech, sports, entertainment, science).
+- Extended `FocusConfig` with volume filtering (`min_volume_24h`), category filtering (`categories.preferred` / `categories.excluded`), trending prioritization (`prioritize_trending`), and configurable fetch limit (`fetch_limit`).
+- Filters run unconditionally as Phases 1-3 in `_apply_focus_filter()`, before the existing focus logic (Phase 4-5).
+- Made `max_tokens` configurable in AIAnalyst via `configure()`, replacing all hardcoded values.
+
+### Edits
+- `src/polymarket_agent/data/models.py` — Added `one_day_price_change`, `is_new` fields to `Market`; added `_CATEGORY_KEYWORDS` dict and `categorize_market()` function
+- `src/polymarket_agent/config.py` — Added `CategoryConfig` model; extended `FocusConfig` with `categories`, `min_volume_24h`, `prioritize_trending`, `fetch_limit`
+- `src/polymarket_agent/strategies/ai_analyst.py` — Added `self._max_tokens` field, `configure()` support, replaced hardcoded `max_tokens` in both Anthropic and OpenAI paths
+- `src/polymarket_agent/orchestrator.py` — Imported `categorize_market`; passed `fetch_limit` to `get_active_markets()` in `tick()` and `generate_signals()`; extended `_apply_focus_filter()` with volume, category, and trending phases
+- `config.yaml` — Added `max_tokens: 2048` to ai_analyst; added `fetch_limit`, `min_volume_24h`, `prioritize_trending`, `categories` to focus config
+- `tests/test_models.py` — 8 new tests: `categorize_market` categories, case insensitivity, priority, new Market fields
+- `tests/test_config.py` — 3 new tests: `CategoryConfig` defaults, `FocusConfig` new fields, YAML loading
+- `tests/test_orchestrator.py` — 3 new tests: volume filter, category exclude, trending sort
+- `tests/test_ai_analyst.py` — 3 new tests: `max_tokens` default, Anthropic flow-through, OpenAI flow-through
+
+### NOT Changed
+- No changes to strategy logic, signal aggregation, or execution layer.
+- Existing focus filter logic (Phase 4-5) unchanged.
+- No DB schema changes.
+
+### Verification
+```bash
+uv run pytest tests/test_models.py tests/test_config.py tests/test_orchestrator.py tests/test_ai_analyst.py -v  # 63 passed
+uv run ruff check src/  # All checks passed
+```
+
+### Branch
+- Working branch: `main`
 
 ---
 
@@ -555,42 +638,6 @@ uv run pytest tests/ -v                     # 395 passed
 # - Old settings (8h): -$32.90 (-7.3%), constant churn and re-entries
 # - New settings (2.5h): -$5.74 (-1.4%), clean exits only, 0 re-entries
 # - Positions reduced from 15 to 5 via disciplined exits, no new entries
-```
-
-### Branch
-- Working branch: `main`
-
----
-
-## Session Entry — 2026-02-28 (Review Follow-Up: Focus Limit Scope + Gamma Parsing Robustness)
-
-### Problem
-- Review of the latest focus fallback changes found two behavior risks:
-  - `focus.max_brackets` truncated results even when the operator explicitly selected markets via `market_ids`/`market_slugs`.
-  - Gamma fallback parsing could drop an entire response when one malformed market row raised during `Market.from_cli(...)`.
-
-### Solution
-- **Scoped bracket limiting:** Kept `max_brackets` for query-driven discovery, but skipped truncation when explicit selectors (`market_ids` or `market_slugs`) are present.
-- **Robust Gamma row handling:** In `_fetch_focus_markets_from_api()`, parse each market row with per-item error handling so malformed rows are skipped while valid rows are still accepted.
-- **TDD regression coverage:** Added two failing orchestrator tests first, then implemented the minimal fix.
-
-### Edits
-- `src/polymarket_agent/orchestrator.py` — limited `max_brackets` enforcement to non-explicit focus selectors; hardened Gamma market parsing to skip malformed rows
-- `tests/test_orchestrator.py` — added:
-  - `test_focus_filter_does_not_limit_explicit_market_ids`
-  - `test_fetch_focus_markets_from_api_skips_malformed_rows`
-
-### NOT Changed
-- No changes to strategy logic, order execution, or DB schema.
-- No changes to config defaults or polling/risk thresholds.
-- No changes to CLI command behavior outside focus filtering internals.
-
-### Verification
-```bash
-uv run python -m pytest tests/test_orchestrator.py::test_focus_filter_does_not_limit_explicit_market_ids tests/test_orchestrator.py::test_fetch_focus_markets_from_api_skips_malformed_rows -q  # failed first, then passed after fix
-uv run python -m pytest tests/test_orchestrator.py -q  # 8 passed
-ruff check src/polymarket_agent/orchestrator.py tests/test_orchestrator.py  # All checks passed
-uv run mypy src/polymarket_agent/orchestrator.py  # Success: no issues found in 1 source file
 ```
 
 ### Branch

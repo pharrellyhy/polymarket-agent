@@ -4,28 +4,31 @@ starting_balance: 100.0
 poll_interval: 10
 strategies:
   signal_trader:
-    enabled: false
+    enabled: true
     volume_threshold: 1000
     price_move_threshold: 0.015
     min_price: 0.05
+    order_size: 10.0
   market_maker:
     enabled: false
     spread: 0.05
     min_liquidity: 1000
     order_size: 50
   arbitrageur:
-    enabled: false
+    enabled: true
     price_sum_tolerance: 0.015
-    order_size: 25
+    order_size: 10.0
   ai_analyst:
     enabled: true
     model: openai/gpt-oss-120b
     # model: qwen/qwen3.5-9b
     max_calls_per_hour: 5000
-    min_divergence: 0.10
+    min_divergence: 0.05
     min_price: 0.05
     order_size: 10.0
+    max_tokens: 2048
     provider: openai
+    structured_prompt: true
     extra_params:
       reasoning_budget: 0    # cap reasoning tokens
       enable_thinking: false  # or disable entirely
@@ -44,10 +47,10 @@ strategies:
     history_fidelity: 60
     order_size: 25.0
   whale_follower:
-    enabled: false
+    enabled: true
     top_n: 10
     min_trade_size: 500.0
-    order_size: 25.0
+    order_size: 10.0
     leaderboard_period: month
     gamma_cache_ttl: 120.0
   cross_platform_arb:
@@ -65,6 +68,7 @@ aggregation:
   min_confidence: 0.40
   min_strategies: 1
   performance_weighted: true
+  conflict_resolution: false
 risk:
   max_position_size: 200.0
   max_daily_loss: 500.0
@@ -100,6 +104,12 @@ focus:
   enabled: false
   search_queries: []
   max_brackets: 30
+  fetch_limit: 100
+  min_volume_24h: 500
+  prioritize_trending: true
+  categories:
+    preferred: [politics, crypto, finance, tech]
+    excluded: [sports]
 monitoring:
   structured_logging: false
   log_file: logs/agent.log

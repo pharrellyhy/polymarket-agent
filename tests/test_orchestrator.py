@@ -175,6 +175,97 @@ def test_focus_filter_does_not_limit_explicit_market_ids(mocker: object) -> None
         assert {market.id for market in filtered} == set(market_ids)
 
 
+def _make_market_with_volume(
+    *, market_id: str = "100", question: str = "Will it rain?", volume_24h: float = 12000
+) -> Market:
+    return Market.from_cli(
+        {
+            "id": market_id,
+            "question": question,
+            "outcomes": '["Yes","No"]',
+            "outcomePrices": '["0.3","0.7"]',
+            "volume": "50000",
+            "volume24hr": str(volume_24h),
+            "liquidity": "5000",
+            "active": True,
+            "closed": False,
+            "slug": "test",
+            "clobTokenIds": '["0xtok1","0xtok2"]',
+        }
+    )
+
+
+def test_volume_filter_drops_low_volume_markets(mocker: object) -> None:
+    """Markets below min_volume_24h should be removed."""
+    mocker.patch("polymarket_agent.data.client.subprocess.run", side_effect=_mock_run)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = AppConfig(
+            mode="paper",
+            strategies={},
+            focus={"min_volume_24h": 5000},
+        )
+        orch = Orchestrator(config=config, db_path=Path(tmpdir) / "test.db")
+        markets = [
+            _make_market_with_volume(market_id="1", question="High volume?", volume_24h=10000),
+            _make_market_with_volume(market_id="2", question="Low volume?", volume_24h=100),
+            _make_market_with_volume(market_id="3", question="Borderline?", volume_24h=5000),
+        ]
+
+        filtered = orch._apply_focus_filter(markets)
+
+        assert len(filtered) == 2
+        ids = {m.id for m in filtered}
+        assert "1" in ids
+        assert "3" in ids
+        assert "2" not in ids
+
+
+def test_category_exclude_filter_removes_sports(mocker: object) -> None:
+    """Markets categorized as 'sports' should be excluded when configured."""
+    mocker.patch("polymarket_agent.data.client.subprocess.run", side_effect=_mock_run)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = AppConfig(
+            mode="paper",
+            strategies={},
+            focus={"categories": {"excluded": ["sports"]}},
+        )
+        orch = Orchestrator(config=config, db_path=Path(tmpdir) / "test.db")
+        markets = [
+            _make_market_with_volume(market_id="1", question="Will the NBA finals go to game 7?"),
+            _make_market_with_volume(market_id="2", question="Will Bitcoin reach $100k?"),
+            _make_market_with_volume(market_id="3", question="Will the president sign the bill?"),
+        ]
+
+        filtered = orch._apply_focus_filter(markets)
+
+        assert len(filtered) == 2
+        ids = {m.id for m in filtered}
+        assert "1" not in ids
+        assert "2" in ids
+        assert "3" in ids
+
+
+def test_trending_sort_orders_by_volume(mocker: object) -> None:
+    """prioritize_trending should sort markets by volume_24h descending."""
+    mocker.patch("polymarket_agent.data.client.subprocess.run", side_effect=_mock_run)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = AppConfig(
+            mode="paper",
+            strategies={},
+            focus={"prioritize_trending": True},
+        )
+        orch = Orchestrator(config=config, db_path=Path(tmpdir) / "test.db")
+        markets = [
+            _make_market_with_volume(market_id="1", question="Low?", volume_24h=100),
+            _make_market_with_volume(market_id="2", question="High?", volume_24h=50000),
+            _make_market_with_volume(market_id="3", question="Mid?", volume_24h=5000),
+        ]
+
+        filtered = orch._apply_focus_filter(markets)
+
+        assert [m.id for m in filtered] == ["2", "3", "1"]
+
+
 def test_fetch_focus_markets_from_api_skips_malformed_rows() -> None:
     """Gamma fallback should skip malformed market rows instead of dropping the whole response."""
     payload = json.dumps(

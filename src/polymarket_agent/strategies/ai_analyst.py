@@ -98,6 +98,7 @@ class AIAnalyst(Strategy):
         self._sentiment_enabled: bool = False
         self._keyword_spike_enabled: bool = False
         self._volatility_enabled: bool = True
+        self._max_tokens: int = 1024
         self._structured_prompt: bool = False
         self._platt_scaling: bool = True
         self._sigmoid_confidence: bool = True
@@ -160,6 +161,7 @@ class AIAnalyst(Strategy):
         self._min_price = float(config.get("min_price", _DEFAULT_MIN_PRICE))
         self._news_max_results = max(1, int(config.get("news_max_results", self._news_max_results)))
         self._extra_params = dict(config.get("extra_params", self._extra_params))
+        self._max_tokens = int(config.get("max_tokens", self._max_tokens))
         self._sentiment_enabled = bool(config.get("sentiment_enabled", self._sentiment_enabled))
         self._keyword_spike_enabled = bool(config.get("keyword_spike_enabled", self._keyword_spike_enabled))
         self._volatility_enabled = bool(config.get("volatility_enabled", self._volatility_enabled))
@@ -223,14 +225,14 @@ class AIAnalyst(Strategy):
         if self._provider == "anthropic":
             response = self._client.messages.create(
                 model=self._model,
-                max_tokens=1024,
+                max_tokens=self._max_tokens,
                 temperature=0,
                 messages=[{"role": "user", "content": prompt}],
             )
             return str(response.content[0].text).strip()
 
         # OpenAI-compatible provider
-        max_tokens = 1024 if self._structured_prompt else 128
+        max_tokens = self._max_tokens if self._structured_prompt else 128
         system_content = (
             "You are a prediction market analyst. Follow the user's instructions exactly."
             if self._structured_prompt
@@ -503,13 +505,10 @@ class AIAnalyst(Strategy):
         # Past lessons from reflection memory (optional)
         if self._reflection_enabled and self._reflection_engine is not None:
             try:
-                from polymarket_agent.strategies.reflection import ReflectionEngine  # noqa: PLC0415
-
-                if isinstance(self._reflection_engine, ReflectionEngine):
-                    lessons = self._reflection_engine.retrieve_relevant_lessons(market.question)
-                    lessons_text = ReflectionEngine.format_lessons_for_prompt(lessons)
-                    if lessons_text:
-                        prompt += f"\n{lessons_text}\n"
+                lessons = self._reflection_engine.retrieve_relevant_lessons(market.question)
+                lessons_text = self._reflection_engine.format_lessons_for_prompt(lessons)
+                if lessons_text:
+                    prompt += f"\n{lessons_text}\n"
             except Exception:
                 logger.debug("Failed to retrieve lessons for prompt enrichment")
 

@@ -92,6 +92,13 @@ class NewsConfig(BaseModel):
     max_results: int = 5
 
 
+class CategoryConfig(BaseModel):
+    """Market category filtering configuration."""
+
+    preferred: list[str] = Field(default_factory=list)
+    excluded: list[str] = Field(default_factory=list)
+
+
 class FocusConfig(BaseModel):
     """Focus trading on specific markets/events."""
 
@@ -100,6 +107,10 @@ class FocusConfig(BaseModel):
     market_ids: list[str] = Field(default_factory=list)
     market_slugs: list[str] = Field(default_factory=list)
     max_brackets: int = 5
+    categories: CategoryConfig = Field(default_factory=CategoryConfig)
+    min_volume_24h: float = 0.0
+    prioritize_trending: bool = False
+    fetch_limit: int = 50
 
 
 class AppConfig(BaseModel):

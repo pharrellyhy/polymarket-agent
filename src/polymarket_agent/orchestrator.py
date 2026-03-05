@@ -11,7 +11,7 @@ from typing import Any
 from polymarket_agent.config import AppConfig
 from polymarket_agent.data.client import PolymarketData
 from polymarket_agent.data.gamma_client import GammaClient
-from polymarket_agent.data.models import Market
+from polymarket_agent.data.models import Market, categorize_market
 from polymarket_agent.data.provider import DataProvider
 from polymarket_agent.db import Database
 from polymarket_agent.execution.base import Executor, Order, Portfolio
@@ -118,7 +118,7 @@ class Orchestrator:
         if self._config.conditional_orders.enabled and self._config.mode != "monitor":
             conditional_trades = self._check_conditional_orders()
 
-        markets = self._data.get_active_markets()
+        markets = self._data.get_active_markets(limit=self._config.focus.fetch_limit)
         markets = self._apply_focus_filter(markets)
         logger.info("Fetched %d active markets", len(markets))
 
@@ -244,7 +244,7 @@ class Orchestrator:
 
     def generate_signals(self) -> list[Signal]:
         """Run all strategies and return aggregated signals without executing."""
-        markets = self._data.get_active_markets()
+        markets = self._data.get_active_markets(limit=self._config.focus.fetch_limit)
         markets = self._apply_focus_filter(markets)
         raw_signals: list[Signal] = []
         for strategy in self._strategies:
@@ -321,12 +321,36 @@ class Orchestrator:
     # ------------------------------------------------------------------
 
     def _apply_focus_filter(self, markets: list[Market]) -> list[Market]:
-        """Filter markets to only those matching the focus config (OR logic).
+        """Filter markets using volume, category, trending, and focus config.
 
-        Returns markets unchanged when focus is disabled.
-        When CLI results don't contain matches, falls back to the Gamma API.
+        Phases 1-3 (volume, category, trending) run unconditionally.
+        Phase 4 (focus IDs/slugs/queries) only runs when focus is enabled.
+        Phase 5 (max_brackets truncation) only runs for query-driven focus.
         """
         focus = self._config.focus
+
+        # Phase 1: Volume filter — drop low-volume markets
+        if focus.min_volume_24h > 0:
+            before = len(markets)
+            markets = [m for m in markets if m.volume_24h >= focus.min_volume_24h]
+            logger.info("Volume filter: %d → %d markets", before, len(markets))
+
+        # Phase 2: Category filter — exclude categories, sort preferred first
+        excluded = {c.strip().lower() for c in focus.categories.excluded if c.strip()}
+        preferred = [c.strip().lower() for c in focus.categories.preferred if c.strip()]
+        if excluded:
+            before = len(markets)
+            markets = [m for m in markets if categorize_market(m) not in excluded]
+            logger.info("Category exclude filter: %d → %d markets", before, len(markets))
+        if preferred:
+            preferred_set = set(preferred)
+            markets.sort(key=lambda m: (0 if categorize_market(m) in preferred_set else 1))
+
+        # Phase 3: Trending sort — sort by volume_24h descending
+        if focus.prioritize_trending:
+            markets.sort(key=lambda m: m.volume_24h, reverse=True)
+
+        # Phase 4: Existing focus logic (IDs/slugs/queries)
         if not focus.enabled:
             return markets
 
@@ -347,7 +371,7 @@ class Orchestrator:
         if not filtered and queries:
             filtered = self._fetch_focus_markets_from_api(queries)
 
-        # Limit to nearest N brackets (sorted by end_date).
+        # Phase 5: Limit to nearest N brackets (sorted by end_date).
         # Only apply to query-driven focus to avoid truncating explicit ID/slug lists.
         max_brackets = focus.max_brackets
         has_explicit_selectors = bool(ids or slugs)

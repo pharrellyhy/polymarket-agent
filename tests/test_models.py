@@ -1,6 +1,6 @@
 """Tests for Pydantic data models."""
 
-from polymarket_agent.data.models import Event, Market, OrderBook
+from polymarket_agent.data.models import Event, Market, OrderBook, categorize_market
 
 SAMPLE_MARKET_JSON = {
     "id": "517310",
@@ -154,3 +154,69 @@ def test_orderbook_completely_empty():
     assert book.best_bid == 0.0
     assert book.midpoint == 0.0
     assert book.spread == 0.0
+
+
+# ------------------------------------------------------------------
+# Market new fields tests
+# ------------------------------------------------------------------
+
+
+def test_market_parses_one_day_price_change_and_is_new():
+    """New Market fields should parse from CLI data."""
+    data = {
+        **SAMPLE_MARKET_JSON,
+        "oneDayPriceChange": "0.05",
+        "new": True,
+    }
+    market = Market.from_cli(data)
+    assert market.one_day_price_change == 0.05
+    assert market.is_new is True
+
+
+def test_market_new_fields_default_when_missing():
+    """New Market fields default correctly when absent from CLI data."""
+    market = Market.from_cli(SAMPLE_MARKET_JSON)
+    assert market.one_day_price_change == 0.0
+    assert market.is_new is False
+
+
+# ------------------------------------------------------------------
+# categorize_market tests
+# ------------------------------------------------------------------
+
+
+def _quick_market(question: str) -> Market:
+    return Market(
+        id="1",
+        question=question,
+        outcomes=["Yes", "No"],
+        outcome_prices=[0.5, 0.5],
+        volume=1000,
+        active=True,
+        closed=False,
+    )
+
+
+def test_categorize_market_politics():
+    assert categorize_market(_quick_market("Will the president sign the bill?")) == "politics"
+
+
+def test_categorize_market_crypto():
+    assert categorize_market(_quick_market("Will Bitcoin reach $100k?")) == "crypto"
+
+
+def test_categorize_market_sports():
+    assert categorize_market(_quick_market("Will the NBA finals go to game 7?")) == "sports"
+
+
+def test_categorize_market_other():
+    assert categorize_market(_quick_market("Will it rain tomorrow?")) == "other"
+
+
+def test_categorize_market_case_insensitive():
+    assert categorize_market(_quick_market("WILL BITCOIN MOON?")) == "crypto"
+
+
+def test_categorize_market_priority_politics_over_crypto():
+    """Politics keywords take priority over crypto when both match."""
+    assert categorize_market(_quick_market("Will the president regulate bitcoin?")) == "politics"
