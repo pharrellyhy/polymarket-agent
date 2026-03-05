@@ -4,6 +4,144 @@ Last updated: 2026-03-05
 
 ---
 
+## Session Entry — 2026-03-05 (Review Pass: Sports Derivative Parser Robustness)
+
+### Problem
+`SportsDerivativeTrader._parse_derivative_analysis()` raised `ValueError` when an LLM response contained a malformed probability entry (for example `"probability": "not-a-number"`), causing the entire parse to fail instead of using remaining valid estimates.
+
+### Solution
+Hardened estimate parsing to skip malformed/non-finite probabilities and continue processing valid entries.
+
+### Edits
+- `src/polymarket_agent/strategies/sports_derivative_trader.py`
+  - In `_parse_derivative_analysis()`, wrapped probability conversion in `try/except` and skipped non-finite values via `math.isfinite()`.
+- `tests/test_sports_derivative_trader.py`
+  - Added `test_parse_derivative_analysis_skips_invalid_probability_entries` (RED → GREEN).
+
+### NOT Changed
+- No changes to signal confidence math, divergence thresholds, or event graph construction.
+- No config/schema/orchestrator changes in this pass.
+
+### Verification
+```bash
+uv run pytest tests/test_sports_derivative_trader.py::test_parse_derivative_analysis_skips_invalid_probability_entries -q
+# 1 passed
+
+uv run pytest tests/test_sports_derivative_trader.py -q
+# 27 passed
+
+uv run ruff check src/polymarket_agent/strategies/sports_derivative_trader.py tests/test_sports_derivative_trader.py
+# All checks passed
+
+uv run mypy src/polymarket_agent/strategies/sports_derivative_trader.py
+# Success: no issues found in 1 source file
+```
+
+---
+
+## Session Entry — 2026-03-05 (SportsDerivativeTrader Strategy)
+
+### Problem
+Polymarket has sports prediction markets with derivative markets (series winner, championship, MVP) that are less efficiently priced than individual games. The agent excluded all sports markets via `config.yaml`. Needed a strategy to exploit cross-market inefficiencies in sports derivatives.
+
+### Solution
+Created `SportsDerivativeTrader` strategy following the `DateCurveTrader` pattern. Implements four analysis components:
+1. **Bracket sum validation** — checks if sibling market probabilities sum to ~1.0
+2. **Hierarchy consistency** — validates P(championship) <= P(series) per team
+3. **Cascade signal detection** — detects when game resolution hasn't propagated to derivative markets
+4. **LLM derivative analysis** — full event graph context for fair price estimation
+
+### Edits
+- `src/polymarket_agent/data/models.py` — Added `SportsMarketNode` and `SportsEventGraph` Pydantic models
+- `src/polymarket_agent/strategies/sports_derivative_trader.py` — **New file**: full strategy with LLM client, cached event graph construction (LLM + regex fallback), four analysis components, news wiring
+- `src/polymarket_agent/orchestrator.py` — Registered `SportsDerivativeTrader` in `STRATEGY_REGISTRY`, wired news provider
+- `config.yaml` — Added `sports_derivative_trader` config section, removed `sports` from `excluded` categories
+- `tests/test_sports_derivative_trader.py` — **New file**: 26 tests covering regex classification, bracket sum, hierarchy, cascade, LLM parsing, market identification, cache repricing
+- `docs/plans/2026-03-05-sports-derivative-trader-design.md` — **New file**: design plan
+
+### NOT Changed
+- No changes to existing strategies, data client, execution layer, or other tests
+- No changes to `config.py` (strategy config is dict-based, no schema changes needed)
+
+### Verification
+```bash
+uv run pytest tests/test_sports_derivative_trader.py -v  # 26 passed
+uv run pytest tests/ -v                                   # 558 passed
+ruff check src/                                           # clean
+mypy src/                                                 # only pre-existing import-not-found errors
+```
+
+---
+
+## Session Entry — 2026-03-05 (Review Pass: DateCurve Regex Base Question Fix)
+
+### Problem
+`DateCurveTrader._detect_curves_regex()` built `base_question` using lowercase string splits (`" by "` / `" before "`), which failed on case variants like `"BY"` and left date fragments in the curve label.
+
+### Solution
+Simplified `_detect_curves_regex()` to reuse `_extract_base_question()` for base label extraction, making behavior case-insensitive and consistent with existing helper logic.
+
+### Edits
+- `src/polymarket_agent/strategies/date_curve_trader.py`
+  - Replaced inline split-chain parsing with `_extract_base_question(items[0][1].question)` when constructing regex-detected curves.
+- `tests/test_date_curve_trader.py`
+  - Added `test_detect_curves_regex_base_question_handles_case_variants` (RED → GREEN).
+
+### NOT Changed
+- No changes to LLM prompts, divergence thresholds, term-structure math, or orchestration wiring.
+- No config or schema changes.
+
+### Verification
+```bash
+uv run pytest tests/test_date_curve_trader.py::test_detect_curves_regex_base_question_handles_case_variants -q
+# 1 passed
+
+uv run pytest tests/test_date_curve_trader.py -q
+# 23 passed
+
+uv run ruff check src/polymarket_agent/strategies/date_curve_trader.py tests/test_date_curve_trader.py
+# All checks passed
+
+uv run mypy src/polymarket_agent/strategies/date_curve_trader.py
+# Success: no issues found in 1 source file
+```
+
+---
+
+## Session Entry — 2026-03-05 (DateCurveTrader Strategy)
+
+### Problem
+Polymarket has date-based prediction markets (e.g., "X by March 7?", "X by March 14?") forming cumulative probability curves. The agent treated each market independently, missing two edges: news-driven curve repricing and term structure arbitrage.
+
+### Solution
+Implemented a new `DateCurveTrader` strategy that:
+1. Detects date-based market groups via LLM (cached 1hr) with regex fallback
+2. Validates term structure monotonicity — violations emit high-confidence (0.9) arbitrage signals
+3. Analyzes curves with LLM + news to find divergences — one LLM call per curve, not per market
+4. Applies Platt scaling and sigmoid confidence (same as AIAnalyst)
+
+### Edits
+- `src/polymarket_agent/data/models.py` — Added `DateCurvePoint` and `DateCurve` Pydantic models
+- `src/polymarket_agent/strategies/date_curve_trader.py` — **New file**: full strategy with curve detection (LLM + regex), term structure validation, news-driven analysis, LLM client init
+- `src/polymarket_agent/orchestrator.py` — Imported `DateCurveTrader`, registered in `STRATEGY_REGISTRY`, wired news provider alongside `AIAnalyst`
+- `config.yaml` — Added `date_curve_trader` section with defaults (enabled, min_divergence=0.10, arb_confidence=0.9, etc.)
+- `tests/test_date_curve_trader.py` — **New file**: 22 unit tests covering date extraction, term structure, curve detection, LLM parsing, Platt scaling, integration
+
+### NOT Changed
+- No changes to existing strategies, signal aggregation, execution, or risk management
+- AIAnalyst unchanged — DateCurveTrader replicates patterns but is fully independent
+- No config schema changes (strategy configs are dict[str, Any])
+
+### Verification
+```bash
+uv run pytest tests/test_date_curve_trader.py -v  # 22 passed
+uv run pytest tests/ -v                            # 531 passed
+ruff check src/                                    # All checks passed
+mypy src/                                          # Only pre-existing import-not-found errors
+```
+
+---
+
 ## Session Entry — 2026-03-05 (Review Pass 4: Reflection Prompt Simplification)
 
 ### Problem

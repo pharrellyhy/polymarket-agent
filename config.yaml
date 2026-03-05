@@ -53,6 +53,40 @@ strategies:
     order_size: 10.0
     leaderboard_period: month
     gamma_cache_ttl: 120.0
+  date_curve_trader:
+    enabled: true
+    min_divergence: 0.10
+    order_size: 25.0
+    min_price: 0.03
+    max_calls_per_hour: 10
+    cache_ttl_seconds: 3600
+    arb_confidence: 0.9
+    provider: openai
+    model: openai/gpt-oss-120b
+    base_url: http://localhost:11567/v1
+    max_tokens: 2048
+    extra_params:
+      reasoning_budget: 0
+      enable_thinking: false
+  sports_derivative_trader:
+    enabled: true
+    min_volume_24h: 200
+    min_price: 0.03
+    min_divergence: 0.08
+    order_size: 15.0
+    max_calls_per_hour: 15
+    cache_ttl_seconds: 1800
+    bracket_sum_tolerance: 0.05
+    cascade_min_move: 0.15
+    cascade_confidence: 0.75
+    hierarchy_confidence: 0.85
+    provider: openai
+    model: openai/gpt-oss-120b
+    base_url: http://localhost:11567/v1
+    max_tokens: 2048
+    extra_params:
+      reasoning_budget: 0
+      enable_thinking: false
   cross_platform_arb:
     enabled: false
     min_divergence: 0.05
@@ -109,7 +143,7 @@ focus:
   prioritize_trending: true
   categories:
     preferred: [politics, crypto, finance, tech]
-    excluded: [sports]
+    excluded: []
 monitoring:
   structured_logging: false
   log_file: logs/agent.log

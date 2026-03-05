@@ -28,10 +28,12 @@ from polymarket_agent.strategies.ai_analyst import AIAnalyst
 from polymarket_agent.strategies.arbitrageur import Arbitrageur
 from polymarket_agent.strategies.base import Signal, Strategy
 from polymarket_agent.strategies.cross_platform_arb import CrossPlatformArb
+from polymarket_agent.strategies.date_curve_trader import DateCurveTrader
 from polymarket_agent.strategies.exit_manager import ExitManager
 from polymarket_agent.strategies.market_maker import MarketMaker
 from polymarket_agent.strategies.reflection import ReflectionEngine
 from polymarket_agent.strategies.signal_trader import SignalTrader
+from polymarket_agent.strategies.sports_derivative_trader import SportsDerivativeTrader
 from polymarket_agent.strategies.technical_analyst import TechnicalAnalyst
 from polymarket_agent.strategies.whale_follower import WhaleFollower
 
@@ -45,6 +47,8 @@ STRATEGY_REGISTRY: dict[str, type[Strategy]] = {
     "technical_analyst": TechnicalAnalyst,
     "whale_follower": WhaleFollower,
     "cross_platform_arb": CrossPlatformArb,
+    "date_curve_trader": DateCurveTrader,
+    "sports_derivative_trader": SportsDerivativeTrader,
 }
 
 
@@ -950,8 +954,8 @@ class Orchestrator:
                 continue
             instance = cls()
             instance.configure(params)
-            # Wire news provider into AI analyst
-            if isinstance(instance, AIAnalyst) and self._news_provider is not None:
+            # Wire news provider into AI analyst and date curve trader
+            if isinstance(instance, (AIAnalyst, DateCurveTrader, SportsDerivativeTrader)) and self._news_provider is not None:
                 instance.set_news_provider(self._news_provider, max_results=self._config.news.max_results)
             strategies.append(instance)
             logger.info("Loaded strategy: %s", name)

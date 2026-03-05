@@ -26,6 +26,7 @@ Agent-friendly auto-trading pipeline for Polymarket prediction markets.
 - **CLI interface** — `run`, `tick`, `status`, `report`, `evaluate`, `autotune`, `backtest`, `dashboard`, `mcp` commands
 - **TTL cache** — in-memory per-key cache with configurable expiration on market data
 - **YAML configuration** — mode selection, strategy params, risk limits, and order management in `config.yaml`
+- **Market filtering** — category-based filtering (politics, crypto, finance, tech, sports, entertainment, science), volume thresholds, trending prioritization, and configurable fetch limits to focus the agent on markets with edge
 - **Signal aggregation** — deduplication, conflict resolution, confidence blending, and cross-strategy consensus
 
 ## Architecture
@@ -59,7 +60,7 @@ flowchart LR
     Tune -->|evaluate + edit| Config
 ```
 
-The **Orchestrator** drives a fetch → analyze → execute cycle each tick, hot-reloading `config.yaml` when it detects changes. The **Data Layer** shells out to the `polymarket` CLI with `-o json` and parses responses into Pydantic models. **Strategies** consume market data and emit `Signal` objects — the TechnicalAnalyst uses price history for indicator-based signals, the WhaleFollower tracks top traders via the **Gamma API**, and the CrossPlatformArb detects fee-adjusted price divergences between Polymarket and **Kalshi/Metaculus**. The AIAnalyst enriches its LLM prompt with technical analysis, news headlines, volatility anomaly scores, and sentiment analysis. The **News Provider** fetches headlines via Google News RSS (free) or Tavily, with caching and rate limiting. The **Executor** fills orders (paper or live) and persists trades to SQLite. The **Auto-Tune** loop periodically evaluates performance and uses an LLM (Anthropic, OpenAI, or local endpoints) to adjust strategy parameters.
+The **Orchestrator** drives a fetch → analyze → execute cycle each tick, hot-reloading `config.yaml` when it detects changes. The **Data Layer** shells out to the `polymarket` CLI with `-o json` and parses responses into Pydantic models. Before strategies run, a **market filtering pipeline** applies volume thresholds, category exclusion (e.g. dropping sports markets), and trending prioritization to focus analysis on markets where the agent has edge. **Strategies** consume filtered market data and emit `Signal` objects — the TechnicalAnalyst uses price history for indicator-based signals, the WhaleFollower tracks top traders via the **Gamma API**, and the CrossPlatformArb detects fee-adjusted price divergences between Polymarket and **Kalshi/Metaculus**. The AIAnalyst enriches its LLM prompt with technical analysis, news headlines, volatility anomaly scores, and sentiment analysis. The **News Provider** fetches headlines via Google News RSS (free) or Tavily, with caching and rate limiting. The **Executor** fills orders (paper or live) and persists trades to SQLite. The **Auto-Tune** loop periodically evaluates performance and uses an LLM (Anthropic, OpenAI, or local endpoints) to adjust strategy parameters.
 
 ## Quick Start
 
@@ -194,6 +195,7 @@ strategies:
     max_calls_per_hour: 20   # rate limit
     min_divergence: 0.15     # min difference between AI estimate and market price
     order_size: 25.0         # USDC per trade
+    max_tokens: 1024         # max tokens for LLM response (default 1024)
     # provider: anthropic    # anthropic (default) or openai
     # base_url: http://localhost:11434/v1  # for local/custom endpoints
     # api_key_env: OPENAI_API_KEY          # env var name for API key
@@ -254,6 +256,29 @@ aggregation:
 ```
 
 Signals are deduplicated per market, filtered by confidence, and optionally require cross-strategy consensus. With `min_strategies: 2`, a trade only executes when multiple strategies independently agree (e.g. both AIAnalyst and TechnicalAnalyst signal the same direction). When `conflict_resolution` is enabled, signals where strategies disagree on direction (buy vs sell for the same market+token) are suppressed entirely. When `blend_confidence` is enabled, confidence is averaged across agreeing strategies rather than using winner-takes-all (max). Both flags can be toggled for A/B testing.
+
+### Market Filtering
+
+Control which markets the agent analyzes. Filters run unconditionally (even with `focus.enabled: false`) to remove noise before strategies see the data:
+
+```yaml
+focus:
+  fetch_limit: 100           # fetch more markets from CLI (default 50)
+  min_volume_24h: 500        # drop markets with <$500 daily volume
+  prioritize_trending: true  # sort high-volume markets first
+  categories:
+    preferred: [politics, crypto, finance, tech]  # sort these to the front
+    excluded: [sports]       # drop sports markets entirely
+```
+
+Markets are auto-categorized by keyword matching on the question text. Seven categories are supported: `politics`, `crypto`, `finance`, `tech`, `sports`, `entertainment`, `science`. Markets that don't match any category are classified as `other`.
+
+**Filter pipeline** (runs in order):
+1. **Volume filter** — drops markets below `min_volume_24h`
+2. **Category filter** — removes excluded categories, sorts preferred categories first
+3. **Trending sort** — sorts remaining markets by 24h volume descending
+4. **Focus filter** — if `enabled: true`, further narrows to IDs/slugs/queries
+5. **Bracket limit** — truncates query-driven results to `max_brackets`
 
 ### Risk Management
 
@@ -617,6 +642,7 @@ strategies:
     max_calls_per_hour: 20
     min_divergence: 0.15
     order_size: 25.0
+    max_tokens: 1024             # max tokens for LLM response
     # provider: anthropic       # anthropic (default) or openai
     # base_url: null             # for local/custom OpenAI-compatible endpoints
     # api_key_env: null          # override env var name for API key
@@ -678,6 +704,19 @@ position_sizing:
 backtest:
   default_spread: 0.02
   snapshot_interval: 86400
+
+focus:
+  enabled: false               # enable focus filtering by IDs/slugs/queries
+  search_queries: []           # substring match on market question
+  market_ids: []               # explicit market IDs to include
+  market_slugs: []             # explicit market slugs to include
+  max_brackets: 5              # max markets for query-driven focus
+  fetch_limit: 50              # number of markets to fetch from CLI
+  min_volume_24h: 0            # drop markets below this 24h volume
+  prioritize_trending: false   # sort by volume_24h descending
+  categories:
+    preferred: []              # sort preferred categories first (politics, crypto, finance, tech, sports, entertainment, science)
+    excluded: []               # exclude markets in these categories
 
 news:
   enabled: true

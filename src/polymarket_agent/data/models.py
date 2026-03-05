@@ -387,3 +387,40 @@ class KeywordSpike(BaseModel):
     baseline_avg: float
     spike_ratio: float  # current / baseline
     window_hours: int
+
+
+# ---------------------------------------------------------------------------
+# Date curve models
+# ---------------------------------------------------------------------------
+
+
+class SportsMarketNode(BaseModel):
+    """A market with its position in a sports event hierarchy."""
+
+    market: Market
+    market_type: str  # "game", "series", "championship", "player_prop"
+    team_or_player: str  # extracted entity, e.g. "Lakers", "LeBron James"
+    is_resolved: bool  # price near 0.0 or 1.0
+
+
+class SportsEventGraph(BaseModel):
+    """A hierarchical group of related sports markets."""
+
+    sport: str  # "nba", "nfl", etc.
+    event_label: str  # "NBA Playoffs 2026", "Super Bowl LXI"
+    nodes: list[SportsMarketNode]
+
+
+class DateCurvePoint(BaseModel):
+    """A single point on a date-based probability curve."""
+
+    date: str  # ISO date (YYYY-MM-DD)
+    market: Market
+    price: float  # current Yes price
+
+
+class DateCurve(BaseModel):
+    """A group of related date-based markets forming a probability curve."""
+
+    base_question: str  # e.g., "US forces enter Iran"
+    points: list[DateCurvePoint]  # sorted chronologically
