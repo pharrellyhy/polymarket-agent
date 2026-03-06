@@ -567,8 +567,17 @@ class AIAnalyst(Strategy):
             return None
 
         # Positive divergence → AI thinks Yes is underpriced → buy Yes token
-        # Negative divergence → AI thinks Yes is overpriced → sell Yes token
-        side: Literal["buy", "sell"] = "buy" if divergence > 0 else "sell"
+        # Negative divergence → AI thinks Yes is overpriced → buy No token
+        if divergence > 0:
+            side: Literal["buy", "sell"] = "buy"
+            signal_token_id = token_id
+            target_price = yes_price
+        else:
+            side = "buy"
+            if len(market.clob_token_ids) < 2:
+                return None
+            signal_token_id = market.clob_token_ids[1]  # No token
+            target_price = 1.0 - yes_price
 
         # Sigmoid confidence: small divergences (<5%) → ~0, 15% → 0.5, 25%+ → ~1.0
         if self._sigmoid_confidence:
@@ -579,10 +588,10 @@ class AIAnalyst(Strategy):
         return Signal(
             strategy=self.name,
             market_id=market.id,
-            token_id=token_id,
+            token_id=signal_token_id,
             side=side,
             confidence=round(confidence, 4),
-            target_price=yes_price,
+            target_price=target_price,
             size=self._order_size,
             reason=f"ai_estimate={estimate:.4f}, market={yes_price:.4f}, div={divergence:+.4f}",
         )

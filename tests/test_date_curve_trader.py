@@ -106,7 +106,7 @@ def test_term_structure_no_signal_when_monotonic() -> None:
 
 
 def test_term_structure_signals_on_violation() -> None:
-    """Monotonicity violation should produce buy + sell arbitrage signals."""
+    """Monotonicity violation should produce buy signals (Yes + No) arbitrage signals."""
     curve = _make_curve([
         ("2026-03-07", 0.20),  # overpriced
         ("2026-03-14", 0.10),  # underpriced (violation!)
@@ -115,9 +115,11 @@ def test_term_structure_signals_on_violation() -> None:
     trader = _make_trader()
     signals = trader._check_term_structure(curve)
     assert len(signals) == 2
-    # One buy (on the underpriced later date) and one sell (on the overpriced earlier date)
-    sides = {s.side for s in signals}
-    assert sides == {"buy", "sell"}
+    # Both are buy signals: buy Yes on underpriced later date, buy No on overpriced earlier date
+    assert all(s.side == "buy" for s in signals)
+    # One should be the No token (on the overpriced earlier date)
+    no_signals = [s for s in signals if s.token_id.endswith("_no")]
+    assert len(no_signals) == 1
     for s in signals:
         assert s.confidence == 0.9
         assert "term_structure_arb" in s.reason
@@ -270,8 +272,8 @@ def test_parse_curve_analysis_generates_divergence_signals() -> None:
         assert "curve_divergence" in s.reason
 
 
-def test_parse_curve_analysis_sell_signal_on_negative_divergence() -> None:
-    """LLM estimate below market price should produce sell signal."""
+def test_parse_curve_analysis_buy_no_on_negative_divergence() -> None:
+    """LLM estimate below market price should buy No token."""
     curve = _make_curve([
         ("2026-03-07", 0.50),
         ("2026-03-14", 0.60),
@@ -285,8 +287,10 @@ def test_parse_curve_analysis_sell_signal_on_negative_divergence() -> None:
     })
     signals = trader._parse_curve_analysis(response, curve)
     assert len(signals) >= 1
-    sell_signals = [s for s in signals if s.side == "sell"]
-    assert len(sell_signals) >= 1
+    # Negative divergence should produce buy signals on No token
+    no_signals = [s for s in signals if s.token_id.endswith("_no")]
+    assert len(no_signals) >= 1
+    assert all(s.side == "buy" for s in no_signals)
 
 
 def test_parse_curve_analysis_invalid_json() -> None:
@@ -320,10 +324,11 @@ def test_extremize_preserves_boundaries() -> None:
 # ------------------------------------------------------------------
 
 
-def test_analyze_returns_empty_when_no_client() -> None:
-    """Strategy should gracefully return empty when no LLM client."""
+def test_analyze_runs_structural_checks_without_client() -> None:
+    """Strategy should run structural checks even without LLM client."""
     trader = DateCurveTrader()
     trader._client = None
+    # With no markets, should return empty (no curves to detect)
     signals = trader.analyze([], MagicMock())
     assert signals == []
 

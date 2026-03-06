@@ -1,6 +1,101 @@
 # Polymarket Agent — Handoff Document
 
-Last updated: 2026-03-05
+Last updated: 2026-03-06
+
+---
+
+## Session Entry — 2026-03-06 (Review Pass: Strategy Bugfix Rollout Follow-up)
+
+### Problem
+Reviewing the newly added strategy bugfix diff exposed two regressions:
+1. `technical_analyst` converted bearish entries into `buy` orders on the No token, but still passed `side="buy"` into `_compute_confidence()`, so bearish setups were scored with bullish RSI/squeeze/MACD logic
+2. `whale_follower` now always emits `buy` orders, but binary whale `sell` trades still reused the sold token instead of flipping to the complementary outcome
+
+### Solution
+- Kept the executed `buy` order for bearish `technical_analyst` entries, but separated the directional thesis used for confidence scoring (`sell` for bearish crossover)
+- Simplified `whale_follower` token/price mapping behind a helper that flips binary sell trades to the complementary outcome before building the follow signal
+- Added focused regression tests for both issues
+
+### Edits
+- `src/polymarket_agent/strategies/technical_analyst.py`
+  - Added `confidence_side` in `_generate_signal()` so bearish No-token buys still use bearish confidence semantics
+- `src/polymarket_agent/strategies/whale_follower.py`
+  - Extracted `_resolve_follow_target()`
+  - Binary `sell` trades now map to the complementary token and price
+- `tests/test_technical_analyst.py`
+  - Added `test_bearish_no_signal_uses_bearish_confidence_direction`
+- `tests/test_whale_follower.py`
+  - Added `test_whale_follower_sell_trade_buys_complementary_binary_token`
+
+### NOT Changed
+- No changes to strategy thresholds, order sizing, or dedup semantics
+- No changes to the broader strategy bugfix batch already in progress
+- No changes to config, orchestration, or execution-layer behavior
+
+### Verification
+```bash
+uv run pytest tests/test_technical_analyst.py::test_bearish_no_signal_uses_bearish_confidence_direction -q
+# 1 passed
+
+uv run pytest tests/test_whale_follower.py::test_whale_follower_sell_trade_buys_complementary_binary_token -q
+# 1 passed
+
+uv run pytest tests/test_technical_analyst.py tests/test_whale_follower.py -q
+# 25 passed
+
+uv run ruff check src/polymarket_agent/strategies/technical_analyst.py src/polymarket_agent/strategies/whale_follower.py tests/test_technical_analyst.py tests/test_whale_follower.py
+# All checks passed
+
+uv run mypy src/polymarket_agent/strategies/technical_analyst.py src/polymarket_agent/strategies/whale_follower.py
+# Success: no issues found in 2 source files
+```
+
+---
+
+## Session Entry — 2026-03-06 (Strategy Bugfix Rollout: Tasks 1-4, 6)
+
+### Problem
+Five bugs materially reduced live P&L:
+1. Bearish entry signals emit `side="sell"` but executor requires existing position → every bearish entry silently fails
+2. `date_curve_trader` and `sports_derivative_trader` return `[]` when LLM client is None, blocking pure-math structural checks
+3. `whale_follower` defaults to Yes token regardless of actual whale trade outcome
+4. `whale_follower` dedup key `trader:market` suppresses distinct trades by same whale
+5. `cross_platform_arb` is unhedged basis trade, not real arbitrage
+
+### Solution
+- **Task 1**: Normalized all bearish entries to buy complementary (No) token across 6 strategies: signal_trader, arbitrageur, ai_analyst, technical_analyst, date_curve_trader, sports_derivative_trader
+- **Task 2**: Removed `if self._client is None: return []` guard from analyze(), gated only LLM enrichment calls, allowing structural checks (term structure, bracket sum, hierarchy, cascade) to run without LLM
+- **Task 3**: Added `outcome_index` field to WhaleTrade model; whale_follower now maps trades to correct outcome token
+- **Task 4**: Added `transaction_hash` field to WhaleTrade; dedup key changed from `trader:market` to transaction hash (or full trade fingerprint fallback)
+- **Task 6**: Added `_enabled` guard (default False) to CrossPlatformArb.analyze(); all existing tests updated to pass `enabled: True`
+
+### Edits
+- `src/polymarket_agent/strategies/signal_trader.py` — bearish: `side="buy"`, `token_id=clob_token_ids[1]`, `target_price=1.0-yes_price`
+- `src/polymarket_agent/strategies/arbitrageur.py` — overpriced sum: buy cheapest outcome instead of sell most expensive
+- `src/polymarket_agent/strategies/ai_analyst.py` — negative divergence: buy No token instead of sell Yes
+- `src/polymarket_agent/strategies/technical_analyst.py` — bearish EMA: buy No token, thread market through `_generate_signal`
+- `src/polymarket_agent/strategies/date_curve_trader.py` — term_structure sell→buy No; curve divergence sell→buy No; removed LLM guard from analyze()
+- `src/polymarket_agent/strategies/sports_derivative_trader.py` — bracket_sum/hierarchy/cascade/derivative sell→buy No; removed LLM guard from analyze()
+- `src/polymarket_agent/strategies/whale_follower.py` — added outcome_index/transaction_hash parsing; dedup by tx hash; always buy
+- `src/polymarket_agent/strategies/cross_platform_arb.py` — added `_enabled` guard defaulting to False
+- `src/polymarket_agent/data/models.py` — added `outcome_index: int = 0` and `transaction_hash: str = ""` to WhaleTrade
+- Updated 9 test files to match new semantics (buy No instead of sell, dedup by tx hash, enabled flag)
+
+### NOT Changed
+- ExitManager sell logic (position exits)
+- MarketMaker sell logic (ask quotes)
+- Paper/Live executor internals
+- config.yaml (cross_platform_arb already had `enabled: false`)
+- Orchestrator, aggregation, risk management
+
+### Verification
+```bash
+uv run pytest tests/ -v --tb=short
+# 562 passed
+
+ruff check src/ tests/
+# All checks passed
+```
 
 ---
 

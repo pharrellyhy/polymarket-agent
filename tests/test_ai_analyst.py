@@ -96,13 +96,14 @@ def test_ai_analyst_graceful_without_api_key() -> None:
         assert len(signals) == 0
 
 
-def test_ai_analyst_generates_sell_signal_on_negative_divergence() -> None:
-    """If AI estimate is below market price, emit a sell signal."""
+def test_ai_analyst_generates_buy_no_signal_on_negative_divergence() -> None:
+    """If AI estimate is below market price, buy No token."""
     strategy = _make_analyst("0.20")
     signals = strategy.analyze([_make_market("1", yes_price=0.50)], MagicMock())
     assert len(signals) == 1
-    assert signals[0].side == "sell"
-    assert signals[0].token_id == "0xtok_1_yes"
+    assert signals[0].side == "buy"
+    assert signals[0].token_id == "0xtok_1_no"
+    assert abs(signals[0].target_price - 0.50) < 0.01  # 1.0 - 0.50
 
 
 def test_ai_analyst_handles_unparseable_response() -> None:
@@ -222,12 +223,13 @@ def test_openai_generates_signal_on_divergence() -> None:
     assert signals[0].side == "buy"
 
 
-def test_openai_generates_sell_signal() -> None:
-    """OpenAI provider: negative divergence generates a sell signal."""
+def test_openai_generates_buy_no_signal() -> None:
+    """OpenAI provider: negative divergence buys No token."""
     strategy = _make_openai_analyst("0.20")
     signals = strategy.analyze([_make_market("1", yes_price=0.50)], MagicMock())
     assert len(signals) == 1
-    assert signals[0].side == "sell"
+    assert signals[0].side == "buy"
+    assert signals[0].token_id == "0xtok_1_no"
 
 
 def test_openai_no_signal_when_aligned() -> None:

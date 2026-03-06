@@ -41,6 +41,7 @@ def test_arb_generates_buy_signal() -> None:
     strategy = CrossPlatformArb()
     strategy.configure(
         {
+            "enabled": True,
             "min_divergence": 0.05,
             "similarity_threshold": 0.5,
             "order_size": 25.0,
@@ -68,6 +69,7 @@ def test_arb_generates_sell_signal() -> None:
     strategy = CrossPlatformArb()
     strategy.configure(
         {
+            "enabled": True,
             "min_divergence": 0.05,
             "similarity_threshold": 0.5,
             "polymarket_fee": 0.02,
@@ -92,6 +94,7 @@ def test_arb_no_signal_within_fee_threshold() -> None:
     strategy = CrossPlatformArb()
     strategy.configure(
         {
+            "enabled": True,
             "min_divergence": 0.05,
             "similarity_threshold": 0.5,
             "polymarket_fee": 0.02,
@@ -113,7 +116,7 @@ def test_arb_no_signal_within_fee_threshold() -> None:
 def test_arb_no_match_below_similarity() -> None:
     """No signal when question similarity is below threshold."""
     strategy = CrossPlatformArb()
-    strategy.configure({"similarity_threshold": 0.9})
+    strategy.configure({"enabled": True, "similarity_threshold": 0.9})
 
     strategy._kalshi.get_active_events = MagicMock(
         return_value=[_make_ext_price("Completely different question about weather", 0.75)]
@@ -152,6 +155,7 @@ def test_arb_picks_best_match() -> None:
     strategy = CrossPlatformArb()
     strategy.configure(
         {
+            "enabled": True,
             "min_divergence": 0.01,
             "similarity_threshold": 0.5,
             "polymarket_fee": 0.0,
@@ -172,6 +176,13 @@ def test_arb_picks_best_match() -> None:
 
     assert len(signals) == 1
     assert "0.80" in signals[0].reason  # Should use the 0.80 price from better match
+
+
+def test_arb_disabled_by_default() -> None:
+    """CrossPlatformArb should be disabled by default (deprecated)."""
+    strategy = CrossPlatformArb()
+    signals = strategy.analyze([_make_market()], MagicMock())
+    assert len(signals) == 0
 
 
 def test_arb_configure_updates_fields() -> None:

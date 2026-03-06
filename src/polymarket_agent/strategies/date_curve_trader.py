@@ -256,9 +256,6 @@ class DateCurveTrader(Strategy):
     # ------------------------------------------------------------------
 
     def analyze(self, markets: list[Market], data: DataProvider) -> list[Signal]:
-        if self._client is None:
-            return []
-
         curves = self._detect_curves(markets)
         if not curves:
             return []
@@ -269,8 +266,8 @@ class DateCurveTrader(Strategy):
             # 1. Term structure validation (pure math, no LLM)
             signals.extend(self._check_term_structure(curve))
 
-            # 2. News-driven curve analysis (one LLM call per curve)
-            if self._can_call():
+            # 2. News-driven curve analysis (one LLM call per curve, requires LLM)
+            if self._client is not None and self._can_call():
                 signals.extend(self._analyze_curve_with_news(curve))
 
         logger.info("DateCurveTrader: %d curves detected, %d signals generated", len(curves), len(signals))
@@ -291,7 +288,7 @@ class DateCurveTrader(Strategy):
 
         # Try LLM-based detection first, fall back to regex
         curves: list[DateCurve] = []
-        if self._can_call():
+        if self._client is not None and self._can_call():
             curves = self._detect_curves_llm(markets)
         if not curves:
             curves = self._detect_curves_regex(markets)
@@ -452,15 +449,15 @@ class DateCurveTrader(Strategy):
                             f"{later.date}={later.price:.3f} < {earlier.date}={earlier.price:.3f}"
                         ),
                     ))
-                # Sell the overpriced earlier date
-                if earlier.market.clob_token_ids and earlier.price >= self._min_price:
+                # Buy No token on the overpriced earlier date
+                if len(earlier.market.clob_token_ids) >= 2 and earlier.price >= self._min_price:
                     signals.append(Signal(
                         strategy=self.name,
                         market_id=earlier.market.id,
-                        token_id=earlier.market.clob_token_ids[0],
-                        side="sell",
+                        token_id=earlier.market.clob_token_ids[1],  # No token
+                        side="buy",
                         confidence=self._arb_confidence,
-                        target_price=earlier.price,
+                        target_price=1.0 - earlier.price,
                         size=self._order_size,
                         reason=(
                             f"term_structure_arb: {curve.base_question} "
@@ -549,16 +546,26 @@ class DateCurveTrader(Strategy):
             if not point.market.clob_token_ids:
                 continue
 
-            side: Literal["buy", "sell"] = "buy" if divergence > 0 else "sell"
             confidence = 1.0 / (1.0 + math.exp(-20.0 * (abs(divergence) - 0.15)))
+
+            if divergence > 0:
+                side: Literal["buy", "sell"] = "buy"
+                token_id = point.market.clob_token_ids[0]  # Yes token
+                target_price = point.price
+            else:
+                if len(point.market.clob_token_ids) < 2:
+                    continue
+                side = "buy"
+                token_id = point.market.clob_token_ids[1]  # No token
+                target_price = 1.0 - point.price
 
             signals.append(Signal(
                 strategy=self.name,
                 market_id=point.market.id,
-                token_id=point.market.clob_token_ids[0],
+                token_id=token_id,
                 side=side,
                 confidence=round(confidence, 4),
-                target_price=point.price,
+                target_price=target_price,
                 size=self._order_size,
                 reason=(
                     f"curve_divergence: {curve.base_question} {point.date} "

@@ -60,11 +60,13 @@ class Arbitrageur(Strategy):
             return None
 
         if price_sum < 1.0:
+            # Underpriced sum — buy the cheapest outcome
             idx = market.outcome_prices.index(min(market.outcome_prices))
             side: Literal["buy", "sell"] = "buy"
         else:
-            idx = market.outcome_prices.index(max(market.outcome_prices))
-            side = "sell"
+            # Overpriced sum — buy the cheapest (complementary) outcome
+            idx = market.outcome_prices.index(min(market.outcome_prices))
+            side = "buy"
 
         if idx >= len(market.clob_token_ids):
             return None

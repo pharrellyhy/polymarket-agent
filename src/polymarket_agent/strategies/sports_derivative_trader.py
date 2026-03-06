@@ -239,9 +239,6 @@ class SportsDerivativeTrader(Strategy):
     # ------------------------------------------------------------------
 
     def analyze(self, markets: list[Market], data: DataProvider) -> list[Signal]:
-        if self._client is None:
-            return []
-
         sports_markets = self._identify_sports_markets(markets)
         if not sports_markets:
             return []
@@ -262,8 +259,8 @@ class SportsDerivativeTrader(Strategy):
             # 3. Cascade signal detection (price-based)
             signals.extend(self._check_cascade_signals(graph))
 
-            # 4. LLM derivative analysis (one call per graph)
-            if self._can_call():
+            # 4. LLM derivative analysis (one call per graph, requires LLM)
+            if self._client is not None and self._can_call():
                 signals.extend(self._llm_derivative_analysis(graph))
 
         logger.info(
@@ -299,7 +296,7 @@ class SportsDerivativeTrader(Strategy):
                 return self._reprice_cached_graphs(cached_graphs, sports_markets)
 
         graphs: list[SportsEventGraph] = []
-        if self._can_call():
+        if self._client is not None and self._can_call():
             graphs = self._build_event_graph_llm(sports_markets)
         if not graphs:
             graphs = self._build_event_graph_regex(sports_markets)
@@ -510,22 +507,22 @@ class SportsDerivativeTrader(Strategy):
             confidence = min(abs(deviation) / 0.15, 1.0)
 
             if deviation > 0:
-                # Overpriced sum — sell the most overpriced candidate
+                # Overpriced sum — buy No on the most overpriced candidate
                 most_overpriced = max(yes_prices, key=lambda x: x[1])
                 node, price = most_overpriced
-                if price >= self._min_price and node.market.clob_token_ids:
+                if price >= self._min_price and len(node.market.clob_token_ids) >= 2:
                     signals.append(Signal(
                         strategy=self.name,
                         market_id=node.market.id,
-                        token_id=node.market.clob_token_ids[0],
-                        side="sell",
+                        token_id=node.market.clob_token_ids[1],  # No token
+                        side="buy",
                         confidence=round(confidence, 4),
-                        target_price=price,
+                        target_price=1.0 - price,
                         size=self._order_size,
                         reason=(
                             f"bracket_sum: {graph.event_label} {mtype} "
                             f"sum={total:.3f} (dev={deviation:+.3f}), "
-                            f"selling {node.team_or_player or node.market.question[:40]}"
+                            f"buying No on {node.team_or_player or node.market.question[:40]}"
                         ),
                     ))
             else:
@@ -595,19 +592,19 @@ class SportsDerivativeTrader(Strategy):
                             f"series={series_price:.3f} — buying series"
                         ),
                     ))
-                # Sell the overpriced championship market
-                if championship.market.clob_token_ids and champ_price >= self._min_price:
+                # Buy No on the overpriced championship market
+                if len(championship.market.clob_token_ids) >= 2 and champ_price >= self._min_price:
                     signals.append(Signal(
                         strategy=self.name,
                         market_id=championship.market.id,
-                        token_id=championship.market.clob_token_ids[0],
-                        side="sell",
+                        token_id=championship.market.clob_token_ids[1],  # No token
+                        side="buy",
                         confidence=self._hierarchy_confidence,
-                        target_price=champ_price,
+                        target_price=1.0 - champ_price,
                         size=self._order_size,
                         reason=(
                             f"hierarchy: {team} championship={champ_price:.3f} > "
-                            f"series={series_price:.3f} — selling championship"
+                            f"series={series_price:.3f} — buying No on championship"
                         ),
                     ))
 
@@ -675,7 +672,17 @@ class SportsDerivativeTrader(Strategy):
 
                     # Direction: if game price went up, derivative should go up too
                     game_direction = "up" if trigger.market.one_day_price_change > 0 else "down"
-                    side: Literal["buy", "sell"] = "buy" if game_direction == "up" else "sell"
+
+                    if game_direction == "up":
+                        side: Literal["buy", "sell"] = "buy"
+                        cascade_token_id = deriv.market.clob_token_ids[0]  # Yes token
+                        cascade_target = deriv_price
+                    else:
+                        if len(deriv.market.clob_token_ids) < 2:
+                            continue
+                        side = "buy"
+                        cascade_token_id = deriv.market.clob_token_ids[1]  # No token
+                        cascade_target = 1.0 - deriv_price
 
                     gap = trigger_move - deriv_move
                     confidence = min(
@@ -689,10 +696,10 @@ class SportsDerivativeTrader(Strategy):
                     signals.append(Signal(
                         strategy=self.name,
                         market_id=deriv.market.id,
-                        token_id=deriv.market.clob_token_ids[0],
+                        token_id=cascade_token_id,
                         side=side,
                         confidence=round(confidence, 4),
-                        target_price=deriv_price,
+                        target_price=cascade_target,
                         size=self._order_size,
                         reason=(
                             f"cascade: {trigger.team_or_player} game moved {trigger_move:+.3f} "
@@ -831,16 +838,26 @@ class SportsDerivativeTrader(Strategy):
             if market_price < self._min_price:
                 continue
 
-            side: Literal["buy", "sell"] = "buy" if divergence > 0 else "sell"
             confidence = 1.0 / (1.0 + math.exp(-20.0 * (abs(divergence) - 0.15)))
+
+            if divergence > 0:
+                side: Literal["buy", "sell"] = "buy"
+                deriv_token_id = node.market.clob_token_ids[0]  # Yes token
+                deriv_target = market_price
+            else:
+                if len(node.market.clob_token_ids) < 2:
+                    continue
+                side = "buy"
+                deriv_token_id = node.market.clob_token_ids[1]  # No token
+                deriv_target = 1.0 - market_price
 
             signals.append(Signal(
                 strategy=self.name,
                 market_id=node.market.id,
-                token_id=node.market.clob_token_ids[0],
+                token_id=deriv_token_id,
                 side=side,
                 confidence=round(confidence, 4),
-                target_price=market_price,
+                target_price=deriv_target,
                 size=self._order_size,
                 reason=(
                     f"derivative_divergence: {graph.event_label} "

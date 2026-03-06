@@ -4,6 +4,15 @@ import json
 from unittest.mock import MagicMock
 
 from polymarket_agent.data.models import Market, PricePoint
+from polymarket_agent.strategies.indicators import (
+    DivergenceResult,
+    EMAResult,
+    MACDResult,
+    RegimeResult,
+    RSIResult,
+    SqueezeResult,
+    TechnicalContext,
+)
 from polymarket_agent.strategies.technical_analyst import TechnicalAnalyst
 
 
@@ -124,7 +133,42 @@ def test_generates_sell_on_bearish_crossover() -> None:
 
     signals = strategy.analyze([_make_market("1", yes_price=0.5)], data)
     assert len(signals) == 1
-    assert signals[0].side == "sell"
+    assert signals[0].side == "buy"  # buy No token on bearish crossover
+    assert signals[0].token_id == "0xtok_1_no"
+
+
+def test_bearish_no_signal_uses_bearish_confidence_direction() -> None:
+    strategy = TechnicalAnalyst()
+    market = _make_market("1", yes_price=0.5)
+    ctx = TechnicalContext(
+        token_id="0xtok_1_yes",
+        ema_fast=EMAResult(period=8, value=0.42),
+        ema_slow=EMAResult(period=21, value=0.5),
+        rsi=RSIResult(rsi=68.0, stoch_rsi=0.9, is_overbought=False, is_oversold=False),
+        squeeze=SqueezeResult(is_squeezing=False, squeeze_releasing=False, momentum=-0.02, bb_width=0.1),
+        macd=MACDResult(
+            macd_line=-0.03,
+            signal_line=-0.01,
+            histogram=-0.02,
+            crossover="bearish",
+        ),
+        divergence=DivergenceResult(macd_divergence="bearish"),
+        regime=RegimeResult(regime="trending", ema_slope=-0.03, bb_expanding=True),
+        trend_direction="down",
+        ema_crossover="bearish",
+        price_change_pct=-0.12,
+        current_price=0.5,
+        price_start=0.62,
+    )
+
+    strategy._compute_confidence = MagicMock(return_value=0.6)  # type: ignore[method-assign]
+
+    signal = strategy._generate_signal(market, ctx)
+
+    assert signal is not None
+    assert signal.token_id == "0xtok_1_no"
+    assert signal.side == "buy"
+    strategy._compute_confidence.assert_called_once_with(ctx, "sell")
 
 
 def test_no_signal_on_flat_prices() -> None:

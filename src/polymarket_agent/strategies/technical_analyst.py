@@ -99,17 +99,30 @@ class TechnicalAnalyst(Strategy):
         if side is None:
             return None
 
-        confidence = self._compute_confidence(ctx, side)
+        confidence_side: Literal["buy", "sell"] = "sell" if ctx.ema_crossover == "bearish" else side
+
+        # Bearish signal: buy No token instead of selling Yes
+        is_bearish = ctx.ema_crossover == "bearish"
+        if is_bearish:
+            if len(market.clob_token_ids) < 2:
+                return None
+            token_id = market.clob_token_ids[1]  # No token
+            target_price = 1.0 - ctx.current_price
+        else:
+            token_id = ctx.token_id
+            target_price = ctx.current_price
+
+        confidence = self._compute_confidence(ctx, confidence_side)
         if confidence <= 0:
             return None
 
         return Signal(
             strategy=self.name,
             market_id=market.id,
-            token_id=ctx.token_id,
+            token_id=token_id,
             side=side,
             confidence=round(confidence, 4),
-            target_price=ctx.current_price,
+            target_price=target_price,
             size=self._order_size,
             reason=self._build_reason(ctx, side),
         )
@@ -125,7 +138,7 @@ class TechnicalAnalyst(Strategy):
         if ctx.ema_crossover == "bearish" and not ctx.rsi.is_oversold:
             if ctx.squeeze.squeeze_releasing and ctx.squeeze.momentum >= 0:
                 return None
-            return "sell"
+            return "buy"  # buy No token (handled in _generate_signal)
         return None
 
     def _compute_confidence(self, ctx: TechnicalContext, side: str) -> float:

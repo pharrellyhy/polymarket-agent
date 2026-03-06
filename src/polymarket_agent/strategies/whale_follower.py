@@ -83,6 +83,8 @@ class WhaleFollower(Strategy):
                         price=float(t.get("price", 0) or 0),
                         timestamp=str(t.get("timestamp", "")),
                         slug=str(t.get("slug", "")),
+                        outcome_index=int(t.get("outcome_index", 0) or 0),
+                        transaction_hash=str(t.get("transaction_hash", "") or ""),
                     )
                 )
         return all_trades
@@ -107,7 +109,11 @@ class WhaleFollower(Strategy):
             if not market.clob_token_ids:
                 continue
 
-            dedup_key = f"{trade.trader_name}:{trade.market_id}"
+            # Deduplicate by event identity (transaction hash or full trade fingerprint)
+            if trade.transaction_hash:
+                dedup_key = trade.transaction_hash
+            else:
+                dedup_key = f"{trade.trader_address}:{trade.market_id}:{trade.timestamp}:{trade.price}:{trade.size}:{trade.side}"
             if dedup_key in self._seen:
                 continue
             self._seen.add(dedup_key)
@@ -115,9 +121,11 @@ class WhaleFollower(Strategy):
             # Confidence: inversely proportional to rank (rank 1 = 1.0, rank 10 = 0.55)
             confidence = max(0.1, 1.0 - (trade.rank - 1) * 0.05)
 
-            token_id = trade.token_id or market.clob_token_ids[0]
-            target_price = market.outcome_prices[0] if market.outcome_prices else 0.5
-            side: Literal["buy", "sell"] = "sell" if trade.side == "sell" else "buy"
+            target = self._resolve_follow_target(trade, market)
+            if target is None:
+                continue
+            token_id, target_price = target
+            side: Literal["buy", "sell"] = "buy"  # always buy (whale sells → buy opposite token)
 
             signals.append(
                 Signal(
@@ -132,3 +140,20 @@ class WhaleFollower(Strategy):
                 )
             )
         return signals
+
+    @staticmethod
+    def _resolve_follow_target(trade: WhaleTrade, market: Market) -> tuple[str, float] | None:
+        """Map a whale trade onto the executable token/price we can buy."""
+        if not market.clob_token_ids:
+            return None
+
+        max_index = len(market.clob_token_ids) - 1
+        idx = max(0, min(trade.outcome_index, max_index))
+
+        # Binary sell trades are followed by buying the complementary outcome.
+        if trade.side == "sell" and len(market.clob_token_ids) == 2:
+            idx = 1 - idx
+
+        token_id = market.clob_token_ids[idx]
+        target_price = market.outcome_prices[idx] if len(market.outcome_prices) > idx else 0.5
+        return token_id, target_price

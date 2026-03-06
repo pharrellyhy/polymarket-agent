@@ -104,7 +104,7 @@ def test_is_resolved_price() -> None:
 
 
 def test_bracket_sum_overpriced() -> None:
-    """Sum > 1.0 should produce sell signal on most overpriced candidate."""
+    """Sum > 1.0 should buy No token on most overpriced candidate."""
     nodes = [
         _make_node(_make_market("m1", "Lakers win championship?", 0.30), team_or_player="Lakers"),
         _make_node(_make_market("m2", "Celtics win championship?", 0.35), team_or_player="Celtics"),
@@ -116,8 +116,9 @@ def test_bracket_sum_overpriced() -> None:
     signals = trader._check_bracket_sum(graph)
 
     assert len(signals) == 1
-    assert signals[0].side == "sell"
+    assert signals[0].side == "buy"
     assert signals[0].market_id == "m2"  # Celtics at 0.35 is highest
+    assert signals[0].token_id == "0xtok_m2_no"  # No token
     assert "bracket_sum" in signals[0].reason
 
 
@@ -186,7 +187,7 @@ def test_bracket_sum_needs_at_least_3() -> None:
 
 
 def test_hierarchy_violation_produces_signals() -> None:
-    """Championship price > series price should produce buy-series + sell-championship."""
+    """Championship price > series price should produce buy-series + buy-No-championship."""
     nodes = [
         _make_node(
             _make_market("champ1", "Lakers win NBA title?", 0.40),
@@ -202,13 +203,13 @@ def test_hierarchy_violation_produces_signals() -> None:
     signals = trader._check_hierarchy_consistency(graph)
 
     assert len(signals) == 2
-    sides = {s.side for s in signals}
-    assert sides == {"buy", "sell"}
-    buy_signal = [s for s in signals if s.side == "buy"][0]
-    sell_signal = [s for s in signals if s.side == "sell"][0]
-    assert buy_signal.market_id == "series1"
-    assert sell_signal.market_id == "champ1"
-    assert "hierarchy" in buy_signal.reason
+    # Both should be buy signals
+    assert all(s.side == "buy" for s in signals)
+    series_signal = [s for s in signals if s.market_id == "series1"][0]
+    champ_signal = [s for s in signals if s.market_id == "champ1"][0]
+    assert series_signal.token_id == "0xtok_series1_yes"  # buy Yes on series
+    assert champ_signal.token_id == "0xtok_champ1_no"  # buy No on championship
+    assert "hierarchy" in series_signal.reason
 
 
 def test_hierarchy_no_violation() -> None:
@@ -458,10 +459,11 @@ def test_identify_sports_markets() -> None:
 # ------------------------------------------------------------------
 
 
-def test_analyze_returns_empty_when_no_client() -> None:
-    """Strategy should gracefully return empty when no LLM client."""
+def test_analyze_runs_structural_checks_without_client() -> None:
+    """Strategy should run structural checks even without LLM client."""
     trader = SportsDerivativeTrader()
     trader._client = None
+    # With no markets, should return empty (no sports markets to analyze)
     signals = trader.analyze([], MagicMock())
     assert signals == []
 

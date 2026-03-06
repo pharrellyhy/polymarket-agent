@@ -74,12 +74,14 @@ class SignalTrader(Strategy):
                 return None
             token_id = market.clob_token_ids[0]
         else:
-            side = "sell"
+            side = "buy"
             if len(market.clob_token_ids) < 2:
                 return None
-            token_id = market.clob_token_ids[1]
+            token_id = market.clob_token_ids[1]  # No token
 
         confidence = min(distance / _MIDPOINT, 1.0)
+
+        target_price = yes_price if token_id == market.clob_token_ids[0] else 1.0 - yes_price
 
         return Signal(
             strategy=self.name,
@@ -87,7 +89,7 @@ class SignalTrader(Strategy):
             token_id=token_id,
             side=side,
             confidence=round(confidence, 4),
-            target_price=yes_price,
+            target_price=target_price,
             size=round(market.volume_24h * 0.01, 2),
             reason=f"yes_price={yes_price:.4f}, 24h_vol={market.volume_24h:.0f}",
         )

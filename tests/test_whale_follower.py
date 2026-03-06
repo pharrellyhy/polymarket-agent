@@ -76,21 +76,40 @@ def test_whale_follower_no_signal_small_trade() -> None:
     assert len(signals) == 0
 
 
-def test_whale_follower_deduplicates() -> None:
-    """Repeated signals for the same trader/market should be deduplicated."""
+def test_whale_follower_deduplicates_by_transaction_hash() -> None:
+    """Trades with the same transaction_hash should be deduplicated."""
     strategy = WhaleFollower()
     strategy.configure({"min_trade_size": 100.0, "order_size": 25.0})
 
     data = MagicMock()
     data.get_leaderboard.return_value = [_make_trader("whale1", 1)]
-    data.get_trader_trades.return_value = [
-        _cli_trade("100", "event-100", "BUY", 500),
-        _cli_trade("100", "event-100", "BUY", 600),
-    ]
+    # Same transaction hash → should dedup to 1 signal
+    trade1 = _cli_trade("100", "event-100", "BUY", 500)
+    trade2 = _cli_trade("100", "event-100", "BUY", 500)
+    trade2["transaction_hash"] = trade1["transaction_hash"]  # same hash
+    data.get_trader_trades.return_value = [trade1, trade2]
 
     markets = [_make_market("100", slug="event-100")]
     signals = strategy.analyze(markets, data)
-    assert len(signals) == 1  # Only one signal despite two trades
+    assert len(signals) == 1  # Deduplicated by transaction hash
+
+
+def test_whale_follower_distinct_trades_not_deduped() -> None:
+    """Trades with different transaction_hashes should produce separate signals."""
+    strategy = WhaleFollower()
+    strategy.configure({"min_trade_size": 100.0, "order_size": 25.0})
+
+    data = MagicMock()
+    data.get_leaderboard.return_value = [_make_trader("whale1", 1)]
+    trade1 = _cli_trade("100", "event-100", "BUY", 500)
+    trade1["transaction_hash"] = "0xaaa111"
+    trade2 = _cli_trade("100", "event-100", "BUY", 600)
+    trade2["transaction_hash"] = "0xbbb222"
+    data.get_trader_trades.return_value = [trade1, trade2]
+
+    markets = [_make_market("100", slug="event-100")]
+    signals = strategy.analyze(markets, data)
+    assert len(signals) == 2  # Distinct trades → distinct signals
 
 
 def test_whale_follower_confidence_inversely_proportional_to_rank() -> None:
@@ -136,6 +155,44 @@ def test_whale_follower_skips_unknown_market() -> None:
     markets = [_make_market("100", slug="event-100")]  # Market 999 not in list
     signals = strategy.analyze(markets, data)
     assert len(signals) == 0
+
+
+def test_whale_follower_uses_outcome_index() -> None:
+    """Whale trade with outcome_index=1 should map to No token."""
+    strategy = WhaleFollower()
+    strategy.configure({"min_trade_size": 100.0, "order_size": 25.0})
+
+    data = MagicMock()
+    data.get_leaderboard.return_value = [_make_trader("whale1", 1)]
+    trade = _cli_trade("100", "event-100", "BUY", 500)
+    trade["outcome_index"] = 1  # No token
+    data.get_trader_trades.return_value = [trade]
+
+    markets = [_make_market("100", slug="event-100")]
+    signals = strategy.analyze(markets, data)
+    assert len(signals) == 1
+    assert signals[0].token_id == "0xtok_100_no"
+    assert signals[0].side == "buy"
+
+
+def test_whale_follower_sell_trade_buys_complementary_binary_token() -> None:
+    """Selling Yes should be followed by buying No on a binary market."""
+    strategy = WhaleFollower()
+    strategy.configure({"min_trade_size": 100.0, "order_size": 25.0})
+
+    data = MagicMock()
+    data.get_leaderboard.return_value = [_make_trader("whale1", 1)]
+    trade = _cli_trade("100", "event-100", "SELL", 500)
+    trade["outcome_index"] = 0  # Whale sold Yes
+    data.get_trader_trades.return_value = [trade]
+
+    markets = [_make_market("100", yes_price=0.62, slug="event-100")]
+    signals = strategy.analyze(markets, data)
+
+    assert len(signals) == 1
+    assert signals[0].side == "buy"
+    assert signals[0].token_id == "0xtok_100_no"
+    assert signals[0].target_price == 0.38
 
 
 def test_whale_follower_does_not_dedup_before_market_match() -> None:

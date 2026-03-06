@@ -344,6 +344,8 @@ class WhaleTrade(BaseModel):
     price: float = 0.0
     timestamp: str = ""
     slug: str = ""
+    outcome_index: int = 0
+    transaction_hash: str = ""
 
 
 class CrossPlatformPrice(BaseModel):

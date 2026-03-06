@@ -34,6 +34,7 @@ class CrossPlatformArb(Strategy):
     name: str = "cross_platform_arb"
 
     def __init__(self) -> None:
+        self._enabled: bool = False
         self._min_divergence: float = _DEFAULT_MIN_DIVERGENCE
         self._similarity_threshold: float = _DEFAULT_SIMILARITY_THRESHOLD
         self._order_size: float = _DEFAULT_ORDER_SIZE
@@ -45,6 +46,7 @@ class CrossPlatformArb(Strategy):
         self._metaculus_api_key_env: str = "METACULUS_API_KEY"
 
     def configure(self, config: dict[str, Any]) -> None:
+        self._enabled = bool(config.get("enabled", False))
         self._min_divergence = float(config.get("min_divergence", _DEFAULT_MIN_DIVERGENCE))
         self._similarity_threshold = float(config.get("similarity_threshold", _DEFAULT_SIMILARITY_THRESHOLD))
         self._order_size = float(config.get("order_size", _DEFAULT_ORDER_SIZE))
@@ -58,6 +60,10 @@ class CrossPlatformArb(Strategy):
         self._metaculus = MetaculusClient(cache_ttl=metaculus_ttl, api_key_env=self._metaculus_api_key_env)
 
     def analyze(self, markets: list[Market], data: DataProvider) -> list[Signal]:
+        if not self._enabled:
+            logger.warning("cross_platform_arb is deprecated; use date_curve_trader / sports_derivative_trader")
+            return []
+
         external_prices = self._fetch_external_prices()
         if not external_prices:
             logger.debug("CrossPlatformArb: no external prices available")
