@@ -29,6 +29,7 @@ class Signal:
     reason: str
     stop_loss: float | None = None
     take_profit: float | None = None
+    execution_probability: float | None = None
 
 
 class Strategy(ABC):

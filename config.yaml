@@ -18,6 +18,23 @@ strategies:
     enabled: true
     price_sum_tolerance: 0.015
     order_size: 10.0
+    # Layer 1: Dependency detection
+    dependency_detection: true
+    dependency_provider: openai
+    dependency_model: openai/gpt-oss-120b
+    dependency_base_url: http://localhost:11567/v1
+    dependency_max_calls_per_hour: 50
+    dependency_cache_ttl: 3600
+    # Layer 2: Bregman divergence
+    min_bregman_divergence: 0.01
+    # Layer 3: Frank-Wolfe optimizer
+    fw_max_iterations: 150
+    fw_convergence_threshold: 0.000001
+    fw_alpha: 0.9
+    fw_initial_epsilon: 0.1
+    # Layer 5: Execution validation
+    min_profit_threshold: 0.05
+    max_slippage_pct: 0.02
   ai_analyst:
     enabled: true
     model: openai/gpt-oss-120b
@@ -135,14 +152,14 @@ news:
   cache_ttl: 600
   max_results: 5
 focus:
-  enabled: false
+  enabled: true
   search_queries: []
-  max_brackets: 30
-  fetch_limit: 100
-  min_volume_24h: 500
+  max_brackets: 50
+  fetch_limit: 200
+  min_volume_24h: 300
   prioritize_trending: true
   categories:
-    preferred: [politics, crypto, finance, tech]
+    preferred: [politics, crypto, finance, tech, sports]
     excluded: []
 monitoring:
   structured_logging: false

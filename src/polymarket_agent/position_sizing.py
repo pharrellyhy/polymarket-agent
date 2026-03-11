@@ -1,9 +1,10 @@
-"""Position sizing strategies: fixed, Kelly criterion, fractional Kelly.
+"""Position sizing strategies: fixed, Kelly criterion, fractional Kelly, execution Kelly.
 
 Includes a CalibrationTable that maps (strategy, confidence_bin) to
 historical win rates for more accurate Kelly sizing.
 """
 
+import math
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -90,6 +91,10 @@ class PositionSizer:
         elif self._method == "fractional_kelly":
             confidence = self._get_calibrated_confidence(signal)
             raw = self.fractional_kelly_size(confidence, signal.target_price)
+        elif self._method == "execution_kelly":
+            confidence = self._get_calibrated_confidence(signal)
+            exec_prob = signal.execution_probability if signal.execution_probability is not None else 1.0
+            raw = self.execution_kelly_size(confidence, signal.target_price, exec_prob)
         else:
             return signal.size
 
@@ -127,6 +132,27 @@ class PositionSizer:
     def fractional_kelly_size(self, confidence: float, price: float) -> float:
         """Fractional Kelly: kelly_fraction * full Kelly."""
         return self._kelly_fraction * self.kelly_size(confidence, price)
+
+    @staticmethod
+    def execution_kelly_size(confidence: float, price: float, execution_probability: float) -> float:
+        """Execution-aware Kelly: f = (bp - q) / b * sqrt(p).
+
+        Modified Kelly that accounts for execution probability, producing
+        more conservative sizing when execution is uncertain.
+
+        b = decimal odds = (1 / price) - 1
+        p = confidence * execution_probability
+        q = 1 - p
+        """
+        if price <= 0 or price >= 1:
+            return 0.0
+        b = (1.0 / price) - 1.0
+        if b <= 0:
+            return 0.0
+        p = confidence * execution_probability
+        q = 1.0 - p
+        f = (b * p - q) / b * math.sqrt(p)
+        return max(f, 0.0)
 
     @staticmethod
     def fixed_size(size: float) -> float:

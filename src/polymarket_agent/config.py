@@ -46,7 +46,7 @@ class PaperTradingConfig(BaseModel):
 class PositionSizingConfig(BaseModel):
     """Position sizing configuration."""
 
-    method: Literal["fixed", "kelly", "fractional_kelly"] = "fixed"
+    method: Literal["fixed", "kelly", "fractional_kelly", "execution_kelly"] = "fixed"
     kelly_fraction: float = 0.25
     max_bet_pct: float = 0.10
 
