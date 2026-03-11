@@ -270,6 +270,53 @@ def test_init_client_rejects_unknown_provider() -> None:
         _init_client(provider="claude", api_key_env=None, base_url=None)
 
 
+def test_validate_new_strategy_params() -> None:
+    """Validate clamping and type preservation for new strategy params."""
+    new_params: list[dict[str, object]] = [
+        {"path": "strategies.whale_follower.top_n", "current": 10, "min": 3, "max": 25},
+        {
+            "path": "strategies.sports_derivative_trader.bracket_sum_tolerance",
+            "current": 0.05,
+            "min": 0.01,
+            "max": 0.15,
+        },
+        {"path": "strategies.date_curve_trader.arb_confidence", "current": 0.7, "min": 0.5, "max": 1.0},
+        {"path": "exit_manager.max_hold_hours", "current": 24, "min": 1, "max": 168},
+    ]
+
+    # Valid change
+    result = _validate_change({"path": "strategies.whale_follower.top_n", "value": 15, "reason": "more whales"}, new_params)
+    assert result is not None
+    assert result["value"] == 15.0
+
+    # Clamp above max
+    result = _validate_change({"path": "strategies.whale_follower.top_n", "value": 50, "reason": "too many"}, new_params)
+    assert result is not None
+    assert result["value"] == 25.0  # clamped
+
+    # Clamp below min
+    result = _validate_change(
+        {
+            "path": "strategies.sports_derivative_trader.bracket_sum_tolerance",
+            "value": 0.001,
+            "reason": "too tight",
+        },
+        new_params,
+    )
+    assert result is not None
+    assert result["value"] == 0.01  # clamped
+
+    # Int type preserved for top_n (current is int)
+    result = _validate_change({"path": "strategies.whale_follower.top_n", "value": 7.6, "reason": "round"}, new_params)
+    assert result is not None
+    assert result["value"] == 8.0  # rounded because current is int
+
+    # Exit manager param valid
+    result = _validate_change({"path": "exit_manager.max_hold_hours", "value": 48, "reason": "longer hold"}, new_params)
+    assert result is not None
+    assert result["value"] == 48.0
+
+
 def test_cli_autotune_rejects_unknown_provider(tmp_path: Path) -> None:
     config_path = _make_config_file(tmp_path)
     db_path = tmp_path / "test.db"

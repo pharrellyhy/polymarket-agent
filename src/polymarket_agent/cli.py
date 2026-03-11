@@ -623,127 +623,47 @@ def mcp(
 def _build_tunable_params(cfg: AppConfig) -> list[dict[str, object]]:
     """Enumerate safe-to-tune parameters with path, current value, min/max, and description."""
     params: list[dict[str, object]] = []
+    strategy_param_specs: list[tuple[str, float, float, str]] = [
+        ("volume_threshold", 500, 50000, "Minimum 24h volume for {name} to consider a market"),
+        ("price_move_threshold", 0.01, 0.20, "Minimum price deviation from fair value for {name}"),
+        ("min_price", 0.01, 0.50, "Minimum token price filter for {name}"),
+        ("spread", 0.01, 0.20, "Bid-ask spread target for {name}"),
+        ("order_size", 5, 500, "Default order size (USDC) for {name}"),
+        ("price_sum_tolerance", 0.005, 0.05, "Price sum deviation threshold for {name} arb detection"),
+        ("ema_fast_period", 3, 15, "Fast EMA period for {name} crossover detection"),
+        ("ema_slow_period", 10, 50, "Slow EMA period for {name} crossover detection"),
+        ("rsi_period", 5, 30, "RSI lookback period for {name}"),
+        ("history_fidelity", 15, 240, "Number of price data points per interval for {name}"),
+        ("min_divergence", 0.05, 0.40, "Minimum AI-vs-market divergence to trigger a trade for {name}"),
+        ("max_calls_per_hour", 5, 100, "Maximum LLM API calls per hour for {name}"),
+        ("top_n", 3, 25, "Number of top leaderboard traders to follow for {name}"),
+        ("min_trade_size", 100, 5000, "Minimum whale trade size (USDC) to trigger follow for {name}"),
+        ("bracket_sum_tolerance", 0.01, 0.15, "Multi-outcome price sum deviation tolerance for {name}"),
+        ("cascade_min_move", 0.05, 0.30, "Minimum price move to detect cascade signal for {name}"),
+        ("cascade_confidence", 0.5, 1.0, "Confidence threshold for cascade signals in {name}"),
+        ("hierarchy_confidence", 0.5, 1.0, "Confidence threshold for hierarchy signals in {name}"),
+        ("min_volume_24h", 50, 5000, "Minimum 24h trading volume filter for {name}"),
+        ("arb_confidence", 0.5, 1.0, "Confidence for term structure arb signals in {name}"),
+        ("cache_ttl_seconds", 300, 7200, "Curve/event detection cache TTL in seconds for {name}"),
+    ]
+    exit_manager_param_specs: list[tuple[str, float, float, str]] = [
+        ("profit_target_pct", 0.05, 0.50, "Take-profit percentage above entry price"),
+        ("stop_loss_pct", 0.05, 0.50, "Stop-loss percentage below entry price"),
+        ("max_hold_hours", 1, 168, "Maximum hours to hold a position before stale exit"),
+    ]
 
     # Strategy-level parameters
     for name, strat_cfg in cfg.strategies.items():
-        if "volume_threshold" in strat_cfg:
+        for key, min_value, max_value, description in strategy_param_specs:
+            if key not in strat_cfg:
+                continue
             params.append(
                 {
-                    "path": f"strategies.{name}.volume_threshold",
-                    "current": strat_cfg["volume_threshold"],
-                    "min": 500,
-                    "max": 50000,
-                    "description": f"Minimum 24h volume for {name} to consider a market",
-                }
-            )
-        if "price_move_threshold" in strat_cfg:
-            params.append(
-                {
-                    "path": f"strategies.{name}.price_move_threshold",
-                    "current": strat_cfg["price_move_threshold"],
-                    "min": 0.01,
-                    "max": 0.20,
-                    "description": f"Minimum price deviation from fair value for {name}",
-                }
-            )
-        if "min_price" in strat_cfg:
-            params.append(
-                {
-                    "path": f"strategies.{name}.min_price",
-                    "current": strat_cfg["min_price"],
-                    "min": 0.01,
-                    "max": 0.50,
-                    "description": f"Minimum token price filter for {name}",
-                }
-            )
-        if "spread" in strat_cfg:
-            params.append(
-                {
-                    "path": f"strategies.{name}.spread",
-                    "current": strat_cfg["spread"],
-                    "min": 0.01,
-                    "max": 0.20,
-                    "description": f"Bid-ask spread target for {name}",
-                }
-            )
-        if "order_size" in strat_cfg:
-            params.append(
-                {
-                    "path": f"strategies.{name}.order_size",
-                    "current": strat_cfg["order_size"],
-                    "min": 5,
-                    "max": 500,
-                    "description": f"Default order size (USDC) for {name}",
-                }
-            )
-        if "price_sum_tolerance" in strat_cfg:
-            params.append(
-                {
-                    "path": f"strategies.{name}.price_sum_tolerance",
-                    "current": strat_cfg["price_sum_tolerance"],
-                    "min": 0.005,
-                    "max": 0.05,
-                    "description": f"Price sum deviation threshold for {name} arb detection",
-                }
-            )
-        if "ema_fast_period" in strat_cfg:
-            params.append(
-                {
-                    "path": f"strategies.{name}.ema_fast_period",
-                    "current": strat_cfg["ema_fast_period"],
-                    "min": 3,
-                    "max": 15,
-                    "description": f"Fast EMA period for {name} crossover detection",
-                }
-            )
-        if "ema_slow_period" in strat_cfg:
-            params.append(
-                {
-                    "path": f"strategies.{name}.ema_slow_period",
-                    "current": strat_cfg["ema_slow_period"],
-                    "min": 10,
-                    "max": 50,
-                    "description": f"Slow EMA period for {name} crossover detection",
-                }
-            )
-        if "rsi_period" in strat_cfg:
-            params.append(
-                {
-                    "path": f"strategies.{name}.rsi_period",
-                    "current": strat_cfg["rsi_period"],
-                    "min": 5,
-                    "max": 30,
-                    "description": f"RSI lookback period for {name}",
-                }
-            )
-        if "history_fidelity" in strat_cfg:
-            params.append(
-                {
-                    "path": f"strategies.{name}.history_fidelity",
-                    "current": strat_cfg["history_fidelity"],
-                    "min": 15,
-                    "max": 240,
-                    "description": f"Number of price data points per interval for {name}",
-                }
-            )
-        if "min_divergence" in strat_cfg:
-            params.append(
-                {
-                    "path": f"strategies.{name}.min_divergence",
-                    "current": strat_cfg["min_divergence"],
-                    "min": 0.05,
-                    "max": 0.40,
-                    "description": f"Minimum AI-vs-market divergence to trigger a trade for {name}",
-                }
-            )
-        if "max_calls_per_hour" in strat_cfg:
-            params.append(
-                {
-                    "path": f"strategies.{name}.max_calls_per_hour",
-                    "current": strat_cfg["max_calls_per_hour"],
-                    "min": 5,
-                    "max": 100,
-                    "description": f"Maximum LLM API calls per hour for {name}",
+                    "path": f"strategies.{name}.{key}",
+                    "current": strat_cfg[key],
+                    "min": min_value,
+                    "max": max_value,
+                    "description": description.format(name=name),
                 }
             )
 
@@ -827,6 +747,19 @@ def _build_tunable_params(cfg: AppConfig) -> list[dict[str, object]]:
                 "description": "Default take-profit percentage above entry price",
             }
         )
+
+    # Exit manager parameters
+    if cfg.exit_manager.enabled:
+        for key, min_value, max_value, description in exit_manager_param_specs:
+            params.append(
+                {
+                    "path": f"exit_manager.{key}",
+                    "current": getattr(cfg.exit_manager, key),
+                    "min": min_value,
+                    "max": max_value,
+                    "description": description,
+                }
+            )
 
     # News provider parameters
     if cfg.news.enabled:

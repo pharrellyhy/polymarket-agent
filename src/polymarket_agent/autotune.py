@@ -4,8 +4,6 @@ Replaces the ``claude -p`` approach with a direct API call to an LLM
 (Anthropic or OpenAI-compatible) for parameter tuning recommendations.
 """
 
-from __future__ import annotations
-
 import json
 import logging
 import os
@@ -39,6 +37,16 @@ PARAMETER GUIDANCE:
   Higher min_divergence = fewer but higher-conviction trades.
 - News parameters (max_calls_per_hour, cache_ttl, max_results) control how often and how much
   real-world context the AI analyst receives. Higher cache_ttl reduces API load.
+- Whale follower parameters (top_n, min_trade_size) control how many whales to track and the
+  minimum trade size to follow. Higher top_n = more signals but lower average quality.
+  Higher min_trade_size = fewer but more significant whale moves.
+- Date curve trader parameters (arb_confidence, cache_ttl_seconds) control term structure
+  arbitrage sensitivity. Higher arb_confidence = fewer but more certain arb signals.
+- Sports derivative parameters (bracket_sum_tolerance, cascade_min_move, cascade_confidence,
+  hierarchy_confidence) control structural signal detection. bracket_sum_tolerance is similar
+  to price_sum_tolerance. cascade/hierarchy confidences gate signal emission.
+- Exit manager parameters (profit_target_pct, stop_loss_pct, max_hold_hours) directly control
+  when positions are closed. Tighter stops reduce drawdown but increase churn.
 - aggregation.min_strategies controls multi-strategy consensus — higher values require more
   strategies to agree before executing a trade.
 

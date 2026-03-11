@@ -143,6 +143,82 @@ def test_build_tunable_params_no_news_params_when_disabled() -> None:
     assert "news.cache_ttl" not in paths
 
 
+def test_build_tunable_params_includes_whale_follower_params() -> None:
+    cfg = AppConfig(
+        strategies={
+            "whale_follower": {
+                "enabled": True,
+                "top_n": 10,
+                "min_trade_size": 500,
+                "order_size": 25.0,
+            }
+        },
+    )
+    params = _build_tunable_params(cfg)
+    paths = [p["path"] for p in params]
+    assert "strategies.whale_follower.top_n" in paths
+    assert "strategies.whale_follower.min_trade_size" in paths
+    assert "strategies.whale_follower.order_size" in paths
+
+
+def test_build_tunable_params_includes_date_curve_trader_params() -> None:
+    cfg = AppConfig(
+        strategies={
+            "date_curve_trader": {
+                "enabled": True,
+                "arb_confidence": 0.7,
+                "cache_ttl_seconds": 600,
+            }
+        },
+    )
+    params = _build_tunable_params(cfg)
+    paths = [p["path"] for p in params]
+    assert "strategies.date_curve_trader.arb_confidence" in paths
+    assert "strategies.date_curve_trader.cache_ttl_seconds" in paths
+
+
+def test_build_tunable_params_includes_sports_derivative_params() -> None:
+    cfg = AppConfig(
+        strategies={
+            "sports_derivative_trader": {
+                "enabled": True,
+                "bracket_sum_tolerance": 0.05,
+                "cascade_min_move": 0.10,
+                "cascade_confidence": 0.7,
+                "hierarchy_confidence": 0.8,
+                "min_volume_24h": 500,
+            }
+        },
+    )
+    params = _build_tunable_params(cfg)
+    paths = [p["path"] for p in params]
+    assert "strategies.sports_derivative_trader.bracket_sum_tolerance" in paths
+    assert "strategies.sports_derivative_trader.cascade_min_move" in paths
+    assert "strategies.sports_derivative_trader.cascade_confidence" in paths
+    assert "strategies.sports_derivative_trader.hierarchy_confidence" in paths
+    assert "strategies.sports_derivative_trader.min_volume_24h" in paths
+
+
+def test_build_tunable_params_includes_exit_manager_when_enabled() -> None:
+    cfg = AppConfig()
+    cfg.exit_manager.enabled = True
+    params = _build_tunable_params(cfg)
+    paths = [p["path"] for p in params]
+    assert "exit_manager.profit_target_pct" in paths
+    assert "exit_manager.stop_loss_pct" in paths
+    assert "exit_manager.max_hold_hours" in paths
+
+
+def test_build_tunable_params_no_exit_manager_when_disabled() -> None:
+    cfg = AppConfig()
+    cfg.exit_manager.enabled = False
+    params = _build_tunable_params(cfg)
+    paths = [p["path"] for p in params]
+    assert "exit_manager.profit_target_pct" not in paths
+    assert "exit_manager.stop_loss_pct" not in paths
+    assert "exit_manager.max_hold_hours" not in paths
+
+
 def test_analyze_trades_empty() -> None:
     result = _analyze_trades([])
     assert result["total"] == 0
